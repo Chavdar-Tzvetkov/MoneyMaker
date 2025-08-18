@@ -1,0 +1,24 @@
+python-dotenv
+SQLAlchemy>=2
+pyodbc
+requests
+
+#OPENAI
+openai>=1.51.0
+
+# Data stack
+pandas>=2.0
+numpy>=1.24
+pytz
+
+# Market data
+yfinance>=0.2.40
+beautifulsoup4
+lxml
+
+# Broker/terminal
+MetaTrader5
+
+# Hours & scheduling (used by utils.market_hours / utils.scheduler)
+pandas-market-calendars
+schedule

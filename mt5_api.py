@@ -1,0 +1,274 @@
+﻿# mt5_api.py
+"""
+MT5 API wrapper: connection handling, price fetching, opening/closing market orders,
+with safe comments, price rounding, volume normalization, broker fill-policy fallback,
+automatic volume capping by free margin, and SL/TP modification.
+Also adds realized PnL capture on close (writes DailyPnL).
+"""
+
+from __future__ import annotations
+from typing import Tuple, Optional, Dict, Any
+from datetime import datetime, timedelta
+import os, re
+import MetaTrader5 as mt5
+from dotenv import load_dotenv
+from utils.symbols import normalize_symbol
+from services.pnl_service import add_to_daily_pnl
+
+load_dotenv()
+
+# ---------- connection ----------
+def initialize_mt5() -> bool:
+    login = int(os.getenv("MT5_LOGIN", "0"))
+    password = os.getenv("MT5_PASSWORD", "")
+    server = os.getenv("MT5_SERVER", "")
+    path = os.getenv("MT5_EXE_PATH", None)
+    if not login or not password or not server:
+        print("[MT5] Missing login/password/server in environment variables.")
+        return False
+    if not mt5.initialize(path):
+        print(f"[MT5] initialize() failed: {mt5.last_error()}")
+        return False
+    if not mt5.login(login, password=password, server=server):
+        print(f"[MT5] login() failed: {mt5.last_error()}")
+        return False
+    print(f"[MT5] Connected to account #{login}")
+    return True
+
+def shutdown_mt5():
+    mt5.shutdown()
+    print("[MT5] Connection closed.")
+
+# ---------- utils ----------
+def _safe_comment(prefix: str) -> str:
+    ts = datetime.now().strftime("%m%d%H%M%S")
+    return re.sub(r"[^A-Za-z0-9 _-]", "", f"{prefix} {ts}")[:30]
+
+def _ensure_symbol_ready(symbol: str) -> Tuple[bool, str]:
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return False, f"Symbol {symbol} not found in MT5."
+    if not info.visible and not mt5.symbol_select(symbol, True):
+        return False, f"Symbol {symbol} not visible and cannot be selected."
+    if info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
+        return False, f"Trading disabled for {symbol}."
+    return True, "OK"
+
+def _normalize_volume(volume: float, info) -> float:
+    if volume <= 0:
+        return 0.0
+    vol = max(float(volume), float(info.volume_min))
+    vol = min(vol, float(info.volume_max))
+    step = float(info.volume_step) or 0.01
+    steps = int((vol - float(info.volume_min)) / step + 1e-9)
+    return round(float(info.volume_min) + steps * step, 2)
+
+def _round_price(sym_info, price: float) -> float:
+    tick = getattr(sym_info, "trade_tick_size", 0.0) or getattr(sym_info, "point", 0.0) or 0.0
+    if tick and tick > 0:
+        steps = round(price / tick)
+        return round(steps * tick, 10)
+    digits = getattr(sym_info, "digits", 5) or 5
+    return round(price, digits)
+
+def _pick_fill_sequence(info) -> list[int]:
+    preferred = getattr(info, "fill_policy", None)
+    seq = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC]
+    if preferred in (mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC):
+        seq = [preferred] + [m for m in seq if m != preferred]
+    return seq
+
+def _cap_volume_by_margin(symbol: str, order_type: int, desired_vol: float, price: float, info, safety: float = 0.85) -> float:
+    acct = mt5.account_info()
+    if not acct:
+        return 0.0
+    free = float(acct.margin_free or 0.0)
+    if free <= 0:
+        return 0.0
+    base = max(float(info.volume_min), 0.10)
+    m = mt5.order_calc_margin(order_type, symbol, base, price)
+    if m is None or m <= 0:
+        base = float(info.volume_min)
+        m = mt5.order_calc_margin(order_type, symbol, base, price)
+        if m is None or m <= 0:
+            return 0.0
+    max_vol_est = (free * safety) / m * base
+    target = min(desired_vol, max_vol_est)
+    if target < float(info.volume_min):
+        return 0.0
+    return _normalize_volume(target, info)
+
+# ---------- public price/position ----------
+def get_current_price(symbol: str) -> Optional[float]:
+    sym = normalize_symbol(symbol)
+    tick = mt5.symbol_info_tick(sym)
+    if not tick:
+        print(f"[MT5] No tick for {sym}")
+        return None
+    if tick.bid and tick.ask:
+        return (tick.bid + tick.ask) / 2.0
+    return tick.last or None
+
+def get_live_tick(symbol: str) -> Optional[Any]:
+    return mt5.symbol_info_tick(normalize_symbol(symbol))
+
+def get_position(symbol: str) -> Optional[Dict[str, Any]]:
+    sym = normalize_symbol(symbol)
+    positions = mt5.positions_get(symbol=sym)
+    if not positions:
+        return None
+    p = positions[0]
+    return {
+        "ticket": p.ticket,
+        "type": p.type,           # 0=BUY, 1=SELL
+        "volume": p.volume,
+        "price_open": p.price_open,
+        "profit": p.profit,
+        "sl": getattr(p, "sl", 0.0),
+        "tp": getattr(p, "tp", 0.0),
+        "symbol": sym,
+    }
+
+# ---------- orders ----------
+def place_market_order(symbol: str, quantity: float, tp_pct: float | None = None, sl_pct: float | None = None) -> Tuple[bool, str]:
+    sym = normalize_symbol(symbol)
+    ok, msg = _ensure_symbol_ready(sym)
+    if not ok:
+        return False, msg
+
+    info = mt5.symbol_info(sym)
+    if info is None:
+        return False, f"symbol_info({sym}) returned None"
+
+    tick = mt5.symbol_info_tick(sym)
+    if not tick:
+        return False, f"No tick for {sym}"
+
+    is_buy = quantity > 0
+    price = tick.ask if is_buy else tick.bid
+    side = "BUY" if is_buy else "SELL"
+    if not price or price <= 0:
+        return False, f"No {'ask' if is_buy else 'bid'} price for {sym}"
+
+    vol_desired = _normalize_volume(abs(float(quantity)), info)
+    order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+    vol = _cap_volume_by_margin(sym, order_type, vol_desired, price, info, safety=0.85)
+    if vol <= 0:
+        acct = mt5.account_info()
+        free = getattr(acct, "margin_free", 0.0) if acct else 0.0
+        return False, f"No money: free_margin={free:.2f} desired_vol={vol_desired} symbol={sym}"
+
+    sl_price = tp_price = None
+    if tp_pct and tp_pct > 0:
+        tp_price = _round_price(info, price * (1 + tp_pct) if is_buy else price * (1 - tp_pct))
+    if sl_pct and sl_pct > 0:
+        sl_price = _round_price(info, price * (1 - sl_pct) if is_buy else price * (1 + sl_pct))
+
+    fill_sequence = _pick_fill_sequence(info)
+    last_err = None
+    for fill_mode in fill_sequence:
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": sym,
+            "volume": vol,
+            "type": order_type,
+            "price": price,
+            "deviation": 20,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": fill_mode,
+            "comment": _safe_comment(f"MM {side}"),
+        }
+        if tp_price is not None:
+            request["tp"] = tp_price
+        if sl_price is not None:
+            request["sl"] = sl_price
+
+        result = mt5.order_send(request)
+        if result is None:
+            last_err = f"order_send None; last_error={mt5.last_error()}; request={request}"
+            continue
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            return True, f"ORDER OK [{side}] {sym}: ticket={result.order}, price={price}, vol={vol}, fill={fill_mode}, tp={tp_price}, sl={sl_price}"
+        last_err = f"retcode={result.retcode} comment={getattr(result, 'comment', '')} fill={fill_mode}"
+        if result.retcode == 10030:  # Unsupported filling mode
+            continue
+    return False, f"ORDER FAIL [{side}] {sym}: {last_err}"
+
+def close_position_market(symbol: str) -> Tuple[bool, str]:
+    sym = normalize_symbol(symbol)
+    pos = get_position(sym)
+    if not pos:
+        return False, f"No open position to close for {sym}"
+
+    info = mt5.symbol_info(sym)
+    if info is None:
+        return False, f"symbol_info({sym}) returned None"
+    tick = mt5.symbol_info_tick(sym)
+    if not tick:
+        return False, f"No tick for {sym}"
+
+    is_buy = (pos["type"] == mt5.POSITION_TYPE_BUY)
+    price = tick.bid if is_buy else tick.ask
+    side = "SELL" if is_buy else "BUY"
+    if not price or price <= 0:
+        return False, f"No close price for {sym}"
+
+    fill_sequence = _pick_fill_sequence(info)
+    last_err = None
+    for fill_mode in fill_sequence:
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": pos["ticket"],
+            "symbol": sym,
+            "volume": pos["volume"],
+            "type": (mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY),
+            "price": price,
+            "deviation": 20,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": fill_mode,
+            "comment": _safe_comment("MM CLOSE"),
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            last_err = f"close order_send None; last_error={mt5.last_error()}; request={request}"
+            continue
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            # --- realized PnL logging via history_deals_get ---
+            try:
+                to_dt = datetime.now()
+                frm = to_dt - timedelta(hours=4)
+                deals = mt5.history_deals_get(frm, to_dt) or []
+                realized = 0.0
+                for d in sorted(deals, key=lambda x: getattr(x, "time", 0), reverse=True):
+                    if getattr(d, "position_id", 0) == pos["ticket"] and getattr(d, "symbol", "") == sym:
+                        realized = float(getattr(d, "profit", 0.0) or 0.0)
+                        break
+                if realized != 0.0:
+                    add_to_daily_pnl(realized)
+            except Exception:
+                pass
+            return True, f"CLOSE OK [{side}] {sym}: ticket={result.order}, price={price}, vol={pos['volume']}, fill={fill_mode}"
+        last_err = f"retcode={result.retcode} comment={getattr(result, 'comment', '')} fill={fill_mode}"
+        if result.retcode == 10030:
+            continue
+    return False, f"CLOSE FAIL [{side}] {sym}: {last_err}"
+
+def modify_position_sl_tp(symbol: str, sl: Optional[float] = None, tp: Optional[float] = None) -> Tuple[bool, str]:
+    sym = normalize_symbol(symbol)
+    pos = get_position(sym)
+    if not pos:
+        return False, f"No open position for {sym}"
+    req = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": pos["ticket"],
+        "symbol": sym,
+        "sl": sl if sl is not None else pos["sl"],
+        "tp": tp if tp is not None else pos["tp"],
+        "comment": _safe_comment("MM MOD"),
+    }
+    result = mt5.order_send(req)
+    if result is None:
+        return False, f"SLTP modify None; last_error={mt5.last_error()}; request={req}"
+    if result.retcode == mt5.TRADE_RETCODE_DONE:
+        return True, f"SLTP modify OK {sym}: sl={req['sl']} tp={req['tp']}"
+    return False, f"SLTP modify FAIL {sym}: retcode={result.retcode} comment={getattr(result,'comment','')}"
