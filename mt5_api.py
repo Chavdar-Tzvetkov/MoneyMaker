@@ -39,6 +39,69 @@ def shutdown_mt5():
     mt5.shutdown()
     print("[MT5] Connection closed.")
 
+
+# ---------- sessions ----------
+def is_symbol_tradable_now(symbol: str, now: datetime | None = None) -> bool:
+    """
+    Return True if the symbol is tradable *right now*.
+    Prefer broker session windows via mt5.symbol_info_session_trade();
+    fall back to generic market hours (utils.market_hours.is_market_open)
+    when the API isn't available or yields no active session.
+    """
+    sym = normalize_symbol(symbol)
+    info = mt5.symbol_info(sym)
+    if info is None:
+        return False
+    if not info.visible:
+        mt5.symbol_select(sym, True)
+
+    # trade_mode: 0=disabled, 1=longonly, 2=shortonly, 3=closeonly, 4=full
+    trade_mode = getattr(info, "trade_mode", 4)
+    if trade_mode in (0, 3):
+        return False
+
+    now = now or datetime.now()
+
+    # Prefer broker sessions if available
+    if hasattr(mt5, "symbol_info_session_trade"):
+        weekday = now.weekday()  # 0=Mon..6=Sun
+        cur_sec = now.hour * 3600 + now.minute * 60 + now.second
+
+        # Iterate session slots (0..9)
+        for idx in range(10):
+            sess = mt5.symbol_info_session_trade(sym, weekday, idx)
+            if sess is None:
+                break
+            tf = getattr(sess, "time_from", None)
+            tt = getattr(sess, "time_to", None)
+            if tf is None or tt is None:
+                continue
+            if tf <= cur_sec <= tt:
+                return True
+        # If no active session matched, fall back to generic hours below.
+
+    # Fallback: generic market hours (your utils/market_hours.py)
+    try:
+        from utils.market_hours import is_market_open as _is_open_generic
+        # Use the *original* symbol string so suffixes like '=X' are preserved
+        return _is_open_generic(symbol)
+    except Exception:
+        # Last-resort: if broker allows full trading mode, assume tradable
+        return trade_mode == 4
+
+
+def count_open_positions(prefixes=('EUR', 'USD', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD')) -> int:
+    """Count open positions for common FX prefixes; lightweight concurrency cap."""
+    positions = mt5.positions_get()
+    if not positions:
+        return 0
+    cnt = 0
+    for p in positions:
+        sym = getattr(p, "symbol", "") or ""
+        # FX pairs often start with a currency code; simple heuristic
+        if any(sym.startswith(px) for px in prefixes):
+            cnt += 1
+    return cnt
 # ---------- utils ----------
 def _safe_comment(prefix: str) -> str:
     ts = datetime.now().strftime("%m%d%H%M%S")
@@ -127,6 +190,8 @@ def get_position(symbol: str) -> Optional[Dict[str, Any]]:
         "sl": getattr(p, "sl", 0.0),
         "tp": getattr(p, "tp", 0.0),
         "symbol": sym,
+        "time": getattr(p, "time", None),
+        "time_msc": getattr(p, "time_msc", None),
     }
 
 # ---------- orders ----------

@@ -28,6 +28,7 @@
     <Compile Include="ai\meta_controller.py" />
     <Compile Include="ai\policy_linucb.py" />
     <Compile Include="config.py" />
+    <Compile Include="config_forex.py" />
     <Compile Include="db\db_session.py" />
     <Compile Include="db\models.py" />
     <Compile Include="db\__init__.py" />

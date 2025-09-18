@@ -1,4 +1,7 @@
 ﻿# config.py
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # ----- SMA Strategy Tuning (split by asset class) -----
 SMA_WINDOWS = {
@@ -36,7 +39,7 @@ BREAKEVEN_AFTER_PCT         = 0.0015   # move SL to entry at +0.15%
 
 # ----- Risk management (fractions, not percents) -----
 # Used at MT5 FX entries. T212 equities don’t use these TP/SL at broker level.
-TAKE_PROFIT_PERCENT = 0.0008    # +0.08% TP (lowered)
+TAKE_PROFIT_PERCENT = 0.0017    # +0.017% TP (lowered)
 STOP_LOSS_PERCENT   = -0.0015   # −0.15% SL (extended)
 
 # ----- Equity software stops & trailing (managed by the bot on T212) -----
@@ -55,17 +58,19 @@ TRADE_QUANTITY = 0.2
 
 # ----- AI meta-controller defaults (mirrors the env toggles we added) -----
 AI_META = {
-    "USE_META_DECIDER": True,
-    "MIN_UCB_MARGIN": 0.05,
-    "UCB_FLOOR": -0.10,
-    "FLIP_COOLDOWN_SEC": 120,
-    "MAX_ACCEPTABLE_UNCERTAINTY": 0.95,
+    "USE_META_DECIDER": os.getenv("USE_META_DECIDER", "1") == "1",
+    "MIN_UCB_MARGIN": float(os.getenv("AI_MIN_UCB_MARGIN", "0.05")),
+    "UCB_FLOOR": float(os.getenv("AI_UCB_FLOOR", "-0.10")),
+    "FLIP_COOLDOWN_SEC": int(os.getenv("AI_FLIP_COOLDOWN_SEC", "120")),
+    "MAX_ACCEPTABLE_UNCERTAINTY": float(os.getenv("MAX_ACCEPTABLE_UNCERTAINTY", "0.95")),
 }
+
 
 # ----- Rate limiting (per symbol) -----
 RATE_LIMIT = {
-    "MAX_TRADES_PER_HOUR": 8,
+    "MAX_TRADES_PER_HOUR": int(os.getenv("MAX_TRADES_PER_HOUR", "8")),
 }
+
 
 # ----- Spike Fade (mean-reversion on outsized 1-bar moves) -----
 # When ENABLED and the last bar is a large spike, the bot flips a BUY->SELL or SELL->BUY

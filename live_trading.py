@@ -1,5 +1,8 @@
-﻿from __future__ import annotations
-
+from __future__ import annotations
+from config_forex import (
+    FOREX_ALLOWED_SYMBOLS, FOREX_BLOCKED_SYMBOLS, USE_BROKER_SESSIONS,
+    MIN_RR, TIME_STOP_MIN, MIN_PROGRESS_R, MAX_CONCURRENT_FOREX, FORCE_FLAT_AT_SESSION_END,
+)
 # --- robust .env loader (handles Windows-1252 smart chars etc.) --------------
 from dotenv import load_dotenv, find_dotenv
 def _init_env():
@@ -46,6 +49,7 @@ from mt5_api import (
     get_position as mt5_get_position,
     close_position_market as mt5_close_position,
     modify_position_sl_tp as mt5_modify_sl_tp,
+    is_symbol_tradable_now as mt5_is_tradable,
 )
 
 from trading212_api import (
@@ -66,6 +70,7 @@ from services.position_service import (
 from services.pnl_service import add_to_daily_pnl
 
 from config import (
+    
     INSTRUMENTS, FOREX_SYMBOLS, TRADE_QUANTITY,
     TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT,
     MAX_POSITIONS_PER_SYMBOL, REENTRY_COOLDOWN_SEC, REENTRY_DELTA_PCT,
@@ -216,21 +221,48 @@ STRATEGY_RUNNERS: Dict[str, Callable[[str, Dict[str, Any]], Optional[str]]] = {
 # =============================================================================
 # Routing and helpers
 # =============================================================================
+
 def _route_get_price(symbol: str) -> Optional[float]:
     if is_forex(symbol):
         return mt5_get_price(to_mt5_symbol(symbol))
     return get_last_price(symbol)
+
+
+def _rr_from_percents(tp_pct: float | None, sl_pct: float | None) -> float | None:
+    """Compute reward:risk ratio from TP and SL percents."""
+    if not tp_pct or not sl_pct or sl_pct <= 0:
+        return None
+    return float(tp_pct) / float(sl_pct)
+
 
 def _route_open(symbol: str, quantity: float) -> Tuple[bool, str]:
     global _last_t212_order_ts
 
     if is_forex(symbol):
         mt5_sym = to_mt5_symbol(symbol)
-        tp = TAKE_PROFIT_PERCENT if TAKE_PROFIT_PERCENT and TAKE_PROFIT_PERCENT > 0 else None
-        sl = abs(STOP_LOSS_PERCENT) if STOP_LOSS_PERCENT and STOP_LOSS_PERCENT < 0 else None
+        # Broker-side TP/SL percents for FX
+        tp = float(TAKE_PROFIT_PERCENT or 0.0) or None
+        sl = abs(float(STOP_LOSS_PERCENT or 0.0)) or None
+
+        # -------------------- FOREX gates --------------------
+        if FOREX_ALLOWED_SYMBOLS and symbol not in FOREX_ALLOWED_SYMBOLS:
+            return False, f"[FOREX] {symbol} not in allowlist"
+        if symbol in FOREX_BLOCKED_SYMBOLS:
+            return False, f"[FOREX] {symbol} is blocked"
+        if USE_BROKER_SESSIONS and not mt5_is_tradable(mt5_sym):
+            return False, f"[FOREX] {symbol} broker session closed"
+        try:
+            from mt5_api import count_open_positions as _mt5_count
+            if _mt5_count() >= MAX_CONCURRENT_FOREX:
+                return False, "[FOREX] concurrency limit reached"
+        except Exception:
+            pass
+        rr = _rr_from_percents(tp, sl)
+        if rr is not None and rr < MIN_RR:
+            return False, f"[FOREX] skip — RR {rr:.2f} < {MIN_RR:.2f}"
         return mt5_place_order(mt5_sym, quantity, tp_pct=tp, sl_pct=sl)
 
-    # T212 equity order pacing to reduce 429
+    # -------------------- Stocks (T212) --------------------
     now = time.time()
     delta = now - _last_t212_order_ts
     if delta < T212_MIN_ORDER_INTERVAL_SEC:
@@ -239,6 +271,7 @@ def _route_open(symbol: str, quantity: float) -> Tuple[bool, str]:
     ok = t212_place_order(symbol, quantity)
     _last_t212_order_ts = time.time()
     return (ok, "T212 order placed" if ok else "T212 order failed or not configured")
+
 
 def _route_close(symbol: str) -> Tuple[bool, str]:
     if is_forex(symbol):
@@ -296,6 +329,57 @@ def _manage_trailing(symbol: str, price: float):
     ):
         ok, msg = mt5_modify_sl_tp(mt5_sym, sl=new_sl, tp=None)
         print(f"[TRAIL] {symbol}: {msg}")
+
+
+
+def _manage_time_stop(symbol: str, price: float):
+    """Close FX trades that stagnate beyond TIME_STOP_MIN without MIN_PROGRESS_R progress in R."""
+    if not is_forex(symbol) or TIME_STOP_MIN <= 0:
+        return
+
+    pos = mt5_get_position(to_mt5_symbol(symbol))
+    if not pos:
+        return
+
+    # --- normalize MT5 open_time to datetime ---
+    from datetime import datetime, timezone
+    open_time_raw = pos.get("time") or pos.get("time_msc")  # either epoch seconds or datetime
+    if isinstance(open_time_raw, (int, float)):
+        open_time = datetime.fromtimestamp(open_time_raw, tz=timezone.utc)
+    elif hasattr(open_time_raw, "timestamp"):
+        open_time = open_time_raw if open_time_raw.tzinfo else open_time_raw.replace(tzinfo=timezone.utc)
+    else:
+        return  # unknown type
+
+    entry = float(pos.get("price_open") or 0.0)
+    if entry <= 0.0:
+        return
+
+    side = "LONG" if int(pos.get("type", 0)) == 0 else "SHORT"
+
+    # Derive risk per trade from configured stop percent (fractions, not %)
+    sl_pct = abs(STOP_LOSS_PERCENT) if STOP_LOSS_PERCENT and STOP_LOSS_PERCENT < 0 else None
+    if not sl_pct or sl_pct <= 0.0:
+        return  # cannot compute R without stop distance
+
+    # Progress in R
+    risk = entry * sl_pct
+    if risk <= 0:
+        return
+    if side == "LONG":
+        progress = (price - entry) / risk
+    else:
+        progress = (entry - price) / risk
+
+    now = datetime.now(tz=open_time.tzinfo) if getattr(open_time, "tzinfo", None) else datetime.utcnow().replace(tzinfo=timezone.utc)
+    age_min = (now - open_time).total_seconds() / 60.0
+
+    if age_min >= TIME_STOP_MIN and progress < MIN_PROGRESS_R:
+        ok, msg = mt5_close_position(to_mt5_symbol(symbol))
+        print(f"[TIME-STOP] {symbol}: {'CLOSED' if ok else 'FAILED'} — age={age_min:.1f}m, progress={progress:.2f}R | {msg}")
+        if ok:
+            add_to_daily_pnl(0.0)  # accounting handled by position close capture
+
 
 # -------------------- Equity software stops / trailing -----------------------
 def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
@@ -782,7 +866,16 @@ def run_live_trading():
                         continue
 
                     # Manage stops/trailing
-                    _manage_trailing(symbol, price)  # FX broker-side
+                    _manage_trailing(symbol, price)
+                    _manage_time_stop(symbol, price)
+                    # Optionally force-flat at end of broker session (FOREX only)
+                    if FORCE_FLAT_AT_SESSION_END and is_forex(symbol):
+                        mt5_sym = to_mt5_symbol(symbol)
+                        pos = mt5_get_position(mt5_sym)
+                        if pos and not mt5_is_tradable(mt5_sym):
+                            ok, msg = mt5_close_position(mt5_sym)
+                            print(f"[SESSION-FLAT] {symbol}: {'CLOSED' if ok else 'FAILED'} — {msg}")
+      # FX broker-side
                     if not is_forex(symbol) and _equity_manage_soft_stops(symbol, price):
                         latest_outcomes[symbol] = "HOLD"
                         continue
