@@ -1,4 +1,4 @@
-﻿# config.py
+# config.py
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -38,9 +38,16 @@ TRAILING_STEP_PCT           = 0.0007   # update SL when improved by ~0.07%
 BREAKEVEN_AFTER_PCT         = 0.0015   # move SL to entry at +0.15%
 
 # ----- Risk management (fractions, not percents) -----
-# Used at MT5 FX entries. T212 equities don’t use these TP/SL at broker level.
-TAKE_PROFIT_PERCENT = 0.0017    # +0.017% TP (lowered)
-STOP_LOSS_PERCENT   = -0.0015   # −0.15% SL (extended)
+# Broker-side TP/SL for FX only (MT5). Equities use software stops.
+TAKE_PROFIT_PERCENT = 0.0017    # +0.17% TP
+STOP_LOSS_PERCENT   = -0.0015   # −0.15% SL
+
+# Account-level risk controls (fractions of current equity)
+# These are *targets* used by the live loop to size positions.
+FX_RISK_PER_TRADE_FRAC   = float(os.getenv("FX_RISK_PER_TRADE_FRAC", "0.003"))   # 0.3% per FX trade
+EQ_RISK_PER_TRADE_FRAC   = float(os.getenv("EQ_RISK_PER_TRADE_FRAC", "0.005"))   # 0.5% per equity trade
+FX_MAX_DAILY_LOSS_FRAC   = float(os.getenv("FX_MAX_DAILY_LOSS_FRAC", "0.020"))   # 2% max daily FX loss
+EQ_MAX_DAILY_LOSS_FRAC   = float(os.getenv("EQ_MAX_DAILY_LOSS_FRAC", "0.015"))   # 1.5% max daily equity loss
 
 # ----- Equity software stops & trailing (managed by the bot on T212) -----
 EQUITY_STOPS_ENABLED             = True     # master enable for software stops on stocks

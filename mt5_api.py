@@ -166,6 +166,19 @@ def _cap_volume_by_margin(symbol: str, order_type: int, desired_vol: float, pric
         return 0.0
     return _normalize_volume(target, info)
 
+def get_account_equity() -> float:
+    """
+    Return current MT5 account equity (float) or 0.0 if unavailable.
+    Used by risk-based position sizing in the live loop.
+    """
+    try:
+        acct = mt5.account_info()
+        if not acct:
+            return 0.0
+        return float(getattr(acct, "equity", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
 # ---------- public price/position ----------
 def get_current_price(symbol: str) -> Optional[float]:
     sym = normalize_symbol(symbol)

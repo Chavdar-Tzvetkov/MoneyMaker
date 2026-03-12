@@ -27,7 +27,7 @@ import requests
 
 from strategies.sma_strategy import analyze_sma
 from strategies.scalping_strategy import analyze_scalping
-from strategies.strategy_config import ACTIVE_STRATEGY, switch_strategy_if_needed
+from strategies.strategy_config import ACTIVE_STRATEGY, switch_strategy_if_needed, is_trading_halted
 
 from utils.market_data import get_last_price, load_recent_bars
 from utils.market_hours import is_market_open
@@ -50,6 +50,7 @@ from mt5_api import (
     close_position_market as mt5_close_position,
     modify_position_sl_tp as mt5_modify_sl_tp,
     is_symbol_tradable_now as mt5_is_tradable,
+    get_account_equity as mt5_get_equity,
 )
 
 from trading212_api import (
@@ -70,16 +71,33 @@ from services.position_service import (
 from services.pnl_service import add_to_daily_pnl, record_equity_close
 
 from config import (
-    
-    INSTRUMENTS, FOREX_SYMBOLS, TRADE_QUANTITY,
-    TAKE_PROFIT_PERCENT, STOP_LOSS_PERCENT,
-    MAX_POSITIONS_PER_SYMBOL, REENTRY_COOLDOWN_SEC, REENTRY_DELTA_PCT,
-    TRAILING_STOP_ENABLED, TRAILING_STOP_DISTANCE_PCT, TRAILING_STEP_PCT, BREAKEVEN_AFTER_PCT,
+    INSTRUMENTS,
+    FOREX_SYMBOLS,
+    TRADE_QUANTITY,
+    TAKE_PROFIT_PERCENT,
+    STOP_LOSS_PERCENT,
+    FX_RISK_PER_TRADE_FRAC,
+    EQ_RISK_PER_TRADE_FRAC,
+    MAX_POSITIONS_PER_SYMBOL,
+    REENTRY_COOLDOWN_SEC,
+    REENTRY_DELTA_PCT,
+    TRAILING_STOP_ENABLED,
+    TRAILING_STOP_DISTANCE_PCT,
+    TRAILING_STEP_PCT,
+    BREAKEVEN_AFTER_PCT,
     # Equity software stops/trailing
-    EQUITY_STOPS_ENABLED, EQUITY_TAKE_PROFIT_PERCENT, EQUITY_STOP_LOSS_PERCENT,
-    EQUITY_TRAILING_ENABLED, EQUITY_TRAILING_DISTANCE_PCT, EQUITY_TRAILING_STEP_PCT, EQUITY_BREAKEVEN_AFTER_PCT,
+    EQUITY_STOPS_ENABLED,
+    EQUITY_TAKE_PROFIT_PERCENT,
+    EQUITY_STOP_LOSS_PERCENT,
+    EQUITY_TRAILING_ENABLED,
+    EQUITY_TRAILING_DISTANCE_PCT,
+    EQUITY_TRAILING_STEP_PCT,
+    EQUITY_BREAKEVEN_AFTER_PCT,
     # Spike-fade
-    SPIKE_FADE_ENABLED, SPIKE_FADE_ATR_MULT, SPIKE_FADE_MIN_RET_PCT, SPIKE_FADE_COOLDOWN_SEC,
+    SPIKE_FADE_ENABLED,
+    SPIKE_FADE_ATR_MULT,
+    SPIKE_FADE_MIN_RET_PCT,
+    SPIKE_FADE_COOLDOWN_SEC,
 )
 
 # ==============================================================================
@@ -772,6 +790,69 @@ def _rate_limit_ok(symbol: str) -> bool:
 def _rate_mark(symbol: str) -> None:
     _order_times.setdefault(symbol, []).append(time.time())
 
+
+def _compute_risk_based_quantity(symbol: str, price: float) -> float:
+    """
+    Compute a position size based on configured per-trade risk fractions.
+
+    Falls back to TRADE_QUANTITY when required inputs are missing. For FX,
+    we use MT5 account equity and STOP_LOSS_PERCENT; for equities we use
+    T212 account info (if available) and EQUITY_STOP_LOSS_PERCENT.
+    """
+    try:
+        base_qty = float(TRADE_QUANTITY)
+    except Exception:
+        base_qty = 0.0
+
+    if price <= 0.0:
+        return base_qty
+
+    if is_forex(symbol):
+        # FX sizing: risk = equity * FX_RISK_PER_TRADE_FRAC,
+        # per-lot risk ≈ price * |STOP_LOSS_PERCENT|
+        eq = mt5_get_equity()
+        sl_frac = abs(float(STOP_LOSS_PERCENT or 0.0))
+        if eq <= 0.0 or sl_frac <= 0.0:
+            return base_qty or 0.1
+        risk_per_trade = eq * float(FX_RISK_PER_TRADE_FRAC or 0.0)
+        if risk_per_trade <= 0.0:
+            return base_qty or 0.1
+        per_lot_risk_est = price * sl_frac
+        if per_lot_risk_est <= 0.0:
+            return base_qty or 0.1
+        lots = risk_per_trade / per_lot_risk_est
+        # Keep within a sane range; the MT5 API will cap by margin as well.
+        return max(0.01, min(lots, 5.0))
+
+    # Equity sizing: risk = equity * EQ_RISK_PER_TRADE_FRAC,
+    # per-share risk ≈ price * |EQUITY_STOP_LOSS_PERCENT|
+    try:
+        info = get_account_info() or {}
+        # Use a conservative notion of equity; fall back to 5000 if unknown.
+        eq_val = float(
+            info.get("totalValue")
+            or info.get("investedValue")
+            or info.get("freeCash")
+            or 5000.0
+        )
+    except Exception:
+        eq_val = 5000.0
+
+    sl_frac_eq = abs(float(EQUITY_STOP_LOSS_PERCENT or 0.0))
+    if eq_val <= 0.0 or sl_frac_eq <= 0.0:
+        return base_qty or 1.0
+
+    risk_per_trade_eq = eq_val * float(EQ_RISK_PER_TRADE_FRAC or 0.0)
+    if risk_per_trade_eq <= 0.0:
+        return base_qty or 1.0
+
+    per_share_risk = price * sl_frac_eq
+    if per_share_risk <= 0.0:
+        return base_qty or 1.0
+
+    shares = risk_per_trade_eq / per_share_risk
+    return max(0.1, min(shares, eq_val / max(price, 1e-6)))
+
 def _current_position_qty(symbol: str) -> float:
     if is_forex(symbol):
         mt5_sym = to_mt5_symbol(symbol)
@@ -852,6 +933,11 @@ def run_live_trading():
 
             for symbol in all_symbols:
                 try:
+                    # Respect global circuit breaker (daily loss) before per-symbol logic.
+                    if is_trading_halted():
+                        latest_outcomes[symbol] = "HOLD"
+                        continue
+
                     if not is_market_open(symbol):
                         latest_outcomes[symbol] = "HOLD"
                         continue
@@ -978,7 +1064,7 @@ def run_live_trading():
                         continue
 
                     cur_qty = _current_position_qty(symbol)
-                    qty = float(TRADE_QUANTITY)
+                    qty = _compute_risk_based_quantity(symbol, price)
                     key = normalize_symbol(symbol)
 
                     db_pos = db_get_position(key)
