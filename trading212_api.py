@@ -1,4 +1,4 @@
-﻿# trading212_api.py
+# trading212_api.py
 import os
 import time
 import random
@@ -9,7 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from datetime import date
 
 from db.db_session import SessionLocal
-from db.models import TradeLog, DailyPnL
+from db.models import TradeLog
+from services.pnl_service import record_equity_close
 
 # for reconciliation + symbol mapping
 from services.position_service import upsert_position as db_upsert_position
@@ -469,15 +470,16 @@ def debug_dump_portfolio_map():
 # DB logging (unchanged)
 # ---------------------------------------------------------------------
 def _log_trade_and_pnl(symbol: str, action: str, price: float, quantity: int) -> None:
+    """
+    Lightweight trade logger for T212 equity orders.
+
+    - Persists a TradeLog row with the requested price/quantity.
+    - Realized PnL is computed and written via services.pnl_service.record_equity_close
+      from the live trading loop, using broker-backed entry prices and current prices.
+    """
     session = SessionLocal()
     try:
         session.add(TradeLog(symbol=symbol, action=action, price=price, quantity=quantity))
-        today = date.today()
-        pnl = session.query(DailyPnL).filter(DailyPnL.date == today).first()
-        if pnl:
-            pnl.pnl += 0.0
-        else:
-            session.add(DailyPnL(date=today, pnl=0.0))
         session.commit()
     except SQLAlchemyError as e:
         session.rollback()

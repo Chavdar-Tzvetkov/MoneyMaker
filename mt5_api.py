@@ -1,4 +1,4 @@
-﻿# mt5_api.py
+# mt5_api.py
 """
 MT5 API wrapper: connection handling, price fetching, opening/closing market orders,
 with safe comments, price rounding, volume normalization, broker fill-policy fallback,
@@ -13,9 +13,14 @@ import os, re
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
 from utils.symbols import normalize_symbol
-from services.pnl_service import add_to_daily_pnl
+from services.pnl_service import record_fx_close_profit
 
 load_dotenv()
+
+# Track MT5 deal tickets we've already logged into DailyPnL during this
+# process lifetime. This gives basic protection against double-counting
+# if close handling is retried or invoked from multiple call sites.
+_logged_deal_ids: set[int] = set()
 
 # ---------- connection ----------
 def initialize_mt5() -> bool:
@@ -301,16 +306,50 @@ def close_position_market(symbol: str) -> Tuple[bool, str]:
             # --- realized PnL logging via history_deals_get ---
             try:
                 to_dt = datetime.now()
-                frm = to_dt - timedelta(hours=4)
+                # Narrower window to reduce ambiguity while still covering the
+                # most recent close. Typical MT5 history calls are cheap.
+                frm = to_dt - timedelta(hours=1)
                 deals = mt5.history_deals_get(frm, to_dt) or []
-                realized = 0.0
-                for d in sorted(deals, key=lambda x: getattr(x, "time", 0), reverse=True):
-                    if getattr(d, "position_id", 0) == pos["ticket"] and getattr(d, "symbol", "") == sym:
-                        realized = float(getattr(d, "profit", 0.0) or 0.0)
-                        break
-                if realized != 0.0:
-                    add_to_daily_pnl(realized)
+
+                realized_total = 0.0
+
+                # Determine which deal.entry values represent a closing leg on
+                # this broker; fall back to no entry filter if constants are
+                # not exposed by the MetaTrader5 module.
+                allowed_entries = {
+                    getattr(mt5, "DEAL_ENTRY_OUT", None),
+                    getattr(mt5, "DEAL_ENTRY_OUT_BY", None),
+                    getattr(mt5, "DEAL_ENTRY_INOUT", None),
+                }
+                entry_filter_enabled = any(e is not None for e in allowed_entries)
+
+                # Iterate in chronological order so that if multiple partial
+                # closes occurred, we accumulate their profit while only
+                # counting each deal ticket once per process lifetime.
+                for d in sorted(deals, key=lambda x: getattr(x, "time", 0)):
+                    if getattr(d, "position_id", 0) != pos["ticket"]:
+                        continue
+                    if getattr(d, "symbol", "") != sym:
+                        continue
+
+                    if entry_filter_enabled:
+                        entry_val = getattr(d, "entry", None)
+                        if entry_val not in allowed_entries:
+                            continue
+
+                    deal_ticket = int(getattr(d, "ticket", 0) or 0)
+                    if deal_ticket in _logged_deal_ids:
+                        continue
+
+                    profit = float(getattr(d, "profit", 0.0) or 0.0)
+                    if profit != 0.0:
+                        realized_total += profit
+                        _logged_deal_ids.add(deal_ticket)
+
+                if realized_total != 0.0:
+                    record_fx_close_profit(realized_total)
             except Exception:
+                # PnL logging failures must not break order closing.
                 pass
             return True, f"CLOSE OK [{side}] {sym}: ticket={result.order}, price={price}, vol={pos['volume']}, fill={fill_mode}"
         last_err = f"retcode={result.retcode} comment={getattr(result, 'comment', '')} fill={fill_mode}"

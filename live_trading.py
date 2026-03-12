@@ -67,7 +67,7 @@ from services.position_service import (
     get_position as db_get_position,
     upsert_position as db_update_position,
 )
-from services.pnl_service import add_to_daily_pnl
+from services.pnl_service import add_to_daily_pnl, record_equity_close
 
 from config import (
     
@@ -404,8 +404,7 @@ def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ TP] {symbol}: {info} @ pnl={pnl:.4f}")
         if ok:
-            realized = (price - entry) * qty_live
-            add_to_daily_pnl(realized)
+            record_equity_close(symbol, entry, price, qty_live)
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
@@ -415,8 +414,7 @@ def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ SL] {symbol}: {info} @ pnl={pnl:.4f}")
         if ok:
-            realized = (price - entry) * qty_live
-            add_to_daily_pnl(realized)
+            record_equity_close(symbol, entry, price, qty_live)
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
@@ -440,8 +438,7 @@ def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ TRAIL STOP] {symbol}: {info} | price={price:.4f} <= SL={sl:.4f}")
         if ok:
-            realized = (price - entry) * qty_live
-            add_to_daily_pnl(realized)
+            record_equity_close(symbol, entry, price, qty_live)
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
@@ -544,8 +541,7 @@ def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, st
                 ok, info = _route_open(symbol, -abs(qty_live))
                 print(f"[PG] {symbol}: EQ close {'OK' if ok else 'FAIL'} — {info} | ur={ur:.4%}, rem={remain_frac}")
                 if ok:
-                    realized = (cur - entry) * qty_live
-                    add_to_daily_pnl(realized)
+                    record_equity_close(symbol, entry, cur, qty_live)
                     invalidate_portfolio_cache()
                     db_update_position(key, 0.0, 0.0, overwrite=True)
                     _eq_trail_sl.pop(symbol, None)
@@ -1065,8 +1061,7 @@ def run_live_trading():
                             ok, info = _route_open(symbol, -sell_qty)
                             print(f"[EQUITY CLOSE] {symbol}: {info}")
                             if ok:
-                                realized = (price - entry) * sell_qty
-                                add_to_daily_pnl(realized)
+                                record_equity_close(symbol, entry, price, sell_qty)
                                 _rate_mark(key)
                                 invalidate_portfolio_cache()
                                 db_update_position(key, 0.0, 0.0, overwrite=True)

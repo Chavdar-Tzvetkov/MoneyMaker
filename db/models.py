@@ -24,6 +24,10 @@ class TradeLog(Base):
     price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    # Optional metadata for richer PnL analysis (not required by core loop)
+    currency = Column(String(10), nullable=True)
+    fees = Column(Float, nullable=True)
+    realised_pnl = Column(Float, nullable=True)
 
 
 class Position(Base):
