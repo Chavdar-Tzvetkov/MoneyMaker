@@ -14,5 +14,5 @@ set "USE_META_DECIDER=0"
 set "LLM_ENABLED=0"
 
 echo [START] Running MoneyMaker (LIVE classic)...
-python main.py --live
+python Main.py --live
 pause

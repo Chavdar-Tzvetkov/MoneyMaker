@@ -1,7 +1,16 @@
 {
   "Version": 1,
   "WorkspaceRootPath": "D:\\VisualStudioProjects\\MoneyMaker\\",
-  "Documents": [],
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{50E09118-7582-43F2-BB2F-9AD555E50DDD}|MoneyMaker.pyproj|D:\\VisualStudioProjects\\MoneyMaker\\config_forex.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{50E09118-7582-43F2-BB2F-9AD555E50DDD}|MoneyMaker.pyproj|solutionrelative:config_forex.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{50E09118-7582-43F2-BB2F-9AD555E50DDD}|MoneyMaker.pyproj|D:\\VisualStudioProjects\\MoneyMaker\\config.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{50E09118-7582-43F2-BB2F-9AD555E50DDD}|MoneyMaker.pyproj|solutionrelative:config.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    }
+  ],
   "DocumentGroupContainers": [
     {
       "Orientation": 0,
@@ -9,8 +18,34 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": -1,
+          "SelectedChildIndex": 0,
           "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "config_forex.py",
+              "DocumentMoniker": "D:\\VisualStudioProjects\\MoneyMaker\\config_forex.py",
+              "RelativeDocumentMoniker": "config_forex.py",
+              "ToolTip": "D:\\VisualStudioProjects\\MoneyMaker\\config_forex.py",
+              "RelativeToolTip": "config_forex.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAQAAABEAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2025-09-25T21:28:42.958Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "config.py",
+              "DocumentMoniker": "D:\\VisualStudioProjects\\MoneyMaker\\config.py",
+              "RelativeDocumentMoniker": "config.py",
+              "ToolTip": "D:\\VisualStudioProjects\\MoneyMaker\\config.py",
+              "RelativeToolTip": "config.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABcAAAA8AAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2025-09-25T21:28:31.503Z",
+              "EditorCaption": ""
+            },
             {
               "$type": "Bookmark",
               "Name": "ST:18:0:{e8034f19-ab72-4f06-83fd-f6832b41aa63}"

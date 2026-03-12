@@ -6,13 +6,13 @@ load_dotenv()
 # ----- SMA Strategy Tuning (split by asset class) -----
 SMA_WINDOWS = {
     "forex":  {"fast": 20, "slow": 50},
-    "stocks": {"fast": 20, "slow": 50},
+    "stocks": {"fast": 21, "slow": 55},   # wider/steadier for equities
 }
 
 # delta = (SMA_FAST - SMA_SLOW) / SMA_SLOW
 SMA_THRESHOLDS = {
-    "forex":  {"buy": 0.0008, "sell": -0.0008, "hold": 0.0002},   # ±0.08%, neutral ±0.02%
-    "stocks": {"buy": 0.0020, "sell": -0.0020, "hold": 0.0005},   # ±0.20%, neutral ±0.05%
+    "forex":  {"buy": 0.0008, "sell": -0.0008, "hold": 0.0002},
+    "stocks": {"buy": 0.0045, "sell": -0.0045, "hold": 0.0015},  # 0.45% / 0.15% band
 }
 
 # ----- Instruments -----
