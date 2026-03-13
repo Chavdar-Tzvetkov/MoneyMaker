@@ -28,8 +28,13 @@ LIVE_TRADING = False
 
 # ----- Trade management (both asset classes) -----
 MAX_POSITIONS_PER_SYMBOL = 1          # no stacking for base entries
-REENTRY_COOLDOWN_SEC=20     # was higher — allows quicker re-entries
-REENTRY_DELTA_PCT=0.0015    # was larger — smaller price drift required to re-enter
+REENTRY_COOLDOWN_SEC = 20             # FX: seconds before same symbol can be re-entered
+REENTRY_DELTA_PCT = 0.0015            # FX: min price move (fraction) to allow re-entry
+# Equity-specific (stocks trade less frequently, hold longer)
+REENTRY_COOLDOWN_SEC_EQUITY = int(os.getenv("REENTRY_COOLDOWN_SEC_EQUITY", "300"))   # 5 min
+REENTRY_DELTA_PCT_EQUITY = float(os.getenv("REENTRY_DELTA_PCT_EQUITY", "0.005"))     # 0.5%
+EQUITY_MIN_HOLD_MINUTES = float(os.getenv("EQUITY_MIN_HOLD_MINUTES", "15"))          # no TP/PG/trail close before this (SL still allowed)
+EQUITY_SELL_CONFIRM_CYCLES = int(os.getenv("EQUITY_SELL_CONFIRM_CYCLES", "2"))       # require N consecutive SELL signals before closing
 
 # ----- Trailing / Breakeven (FX only in current code) -----
 TRAILING_STOP_ENABLED       = True
@@ -51,12 +56,12 @@ EQ_MAX_DAILY_LOSS_FRAC   = float(os.getenv("EQ_MAX_DAILY_LOSS_FRAC", "0.015"))  
 
 # ----- Equity software stops & trailing (managed by the bot on T212) -----
 EQUITY_STOPS_ENABLED             = True     # master enable for software stops on stocks
-EQUITY_TAKE_PROFIT_PERCENT       = 0.0060   # +0.60% TP
+EQUITY_TAKE_PROFIT_PERCENT       = float(os.getenv("EQUITY_TAKE_PROFIT_PERCENT", "0.015"))   # +1.5% TP (wider so positions can run)
 EQUITY_STOP_LOSS_PERCENT         = -0.0150  # −1.50% SL
 EQUITY_TRAILING_ENABLED          = True
-EQUITY_TRAILING_DISTANCE_PCT     = 0.0100   # 1.0% trail distance
-EQUITY_TRAILING_STEP_PCT         = 0.0030   # update when improved by ~0.3%
-EQUITY_BREAKEVEN_AFTER_PCT       = 0.0040   # start trailing after +0.4% in profit
+EQUITY_TRAILING_DISTANCE_PCT     = 0.0150   # 1.5% trail distance (wider)
+EQUITY_TRAILING_STEP_PCT         = 0.0050   # update when improved by 0.5%
+EQUITY_BREAKEVEN_AFTER_PCT       = 0.0060   # start trailing after +0.6% in profit
 
 # Default order size:
 # - FX (MT5): lots (e.g., 0.2 lot)
@@ -75,7 +80,8 @@ AI_META = {
 
 # ----- Rate limiting (per symbol) -----
 RATE_LIMIT = {
-    "MAX_TRADES_PER_HOUR": int(os.getenv("MAX_TRADES_PER_HOUR", "8")),
+    "MAX_TRADES_PER_HOUR": int(os.getenv("MAX_TRADES_PER_HOUR", "8")),           # FX
+    "EQUITY_MAX_TRADES_PER_HOUR": int(os.getenv("EQUITY_MAX_TRADES_PER_HOUR", "3")),  # stocks (stricter)
 }
 
 

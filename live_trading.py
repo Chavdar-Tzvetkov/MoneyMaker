@@ -82,6 +82,11 @@ from config import (
     MAX_POSITIONS_PER_SYMBOL,
     REENTRY_COOLDOWN_SEC,
     REENTRY_DELTA_PCT,
+    REENTRY_COOLDOWN_SEC_EQUITY,
+    REENTRY_DELTA_PCT_EQUITY,
+    EQUITY_MIN_HOLD_MINUTES,
+    EQUITY_SELL_CONFIRM_CYCLES,
+    RATE_LIMIT,
     TRAILING_STOP_ENABLED,
     TRAILING_STOP_DISTANCE_PCT,
     TRAILING_STEP_PCT,
@@ -143,8 +148,8 @@ NUDGE_MIN_ATR_FRAC = float(os.getenv("NUDGE_MIN_ATR_FRAC", "0.5"))
 PG_ENABLED = bool(int(os.getenv("PG_ENABLED", "1")))
 PG_MIN_PROFIT_PCT_FX = float(os.getenv("PG_MIN_PROFIT_PCT_FX", "0.0003"))  # 0.03%
 PG_TP_REMAIN_FRAC_FX = float(os.getenv("PG_TP_REMAIN_FRAC_FX", "0.30"))
-PG_MIN_PROFIT_PCT_EQ = float(os.getenv("PG_MIN_PROFIT_PCT_EQ", "0.0020"))  # 0.20%
-PG_TP_REMAIN_FRAC_EQ = float(os.getenv("PG_TP_REMAIN_FRAC_EQ", "0.40"))
+PG_MIN_PROFIT_PCT_EQ = float(os.getenv("PG_MIN_PROFIT_PCT_EQ", "0.0060"))  # 0.60% min profit before PG can skim equity
+PG_TP_REMAIN_FRAC_EQ = float(os.getenv("PG_TP_REMAIN_FRAC_EQ", "0.50"))   # require 50% of TP remaining
 PG_REQUIRE_NOT_BUY   = bool(int(os.getenv("PG_REQUIRE_NOT_BUY", "1")))
 PG_MIN_POS_AGE_SEC   = int(os.getenv("PG_MIN_POS_AGE_SEC", "0"))
 
@@ -165,6 +170,10 @@ _eq_trail_sl: Dict[str, float] = {}
 _last_ai_arm: Dict[str, str] = {}
 # Which meta-controller action last opened a position (for delayed reward on close)
 _last_open_action: Dict[str, str] = {}
+# Equity: time when position was opened (for min-hold check)
+_equity_position_open_ts: Dict[str, float] = {}
+# Equity: consecutive SELL signals before we allow close (sell confirmation)
+_equity_sell_streak: Dict[str, int] = {}
 # HOLD streak tracker
 _hold_streak: Dict[str, int] = {}
 
@@ -308,10 +317,12 @@ def _can_reenter(symbol: str, side: str, price: float) -> bool:
     info = _last_entry.get(symbol)
     if not info:
         return True
-    if time.time() - info["time"] < REENTRY_COOLDOWN_SEC:
+    cooldown = REENTRY_COOLDOWN_SEC_EQUITY if not is_forex(symbol) else REENTRY_COOLDOWN_SEC
+    delta_pct = REENTRY_DELTA_PCT_EQUITY if not is_forex(symbol) else REENTRY_DELTA_PCT
+    if time.time() - info["time"] < cooldown:
         return False
     delta = (price - info["price"]) / info["price"]
-    return abs(delta) >= REENTRY_DELTA_PCT
+    return abs(delta) >= delta_pct
 
 def _remember_entry(symbol: str, side: str, price: float):
     _last_entry[symbol] = {"side": side, "price": price, "time": time.time()}
@@ -407,6 +418,14 @@ def _manage_time_stop(symbol: str, price: float, meta=None):
 
 
 # -------------------- Equity software stops / trailing -----------------------
+def _equity_position_age_minutes(symbol: str) -> float:
+    """Minutes since current equity position was opened (0 if unknown)."""
+    ts = _equity_position_open_ts.get(symbol) or _equity_position_open_ts.get(normalize_symbol(symbol), 0.0)
+    if ts <= 0:
+        return 999.0
+    return (time.time() - ts) / 60.0
+
+
 def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
     if not EQUITY_STOPS_ENABLED:
         return False
@@ -423,20 +442,10 @@ def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
         return False
 
     pnl = (price - entry) / entry
+    age_min = _equity_position_age_minutes(symbol)
+    min_hold_ok = age_min >= float(EQUITY_MIN_HOLD_MINUTES)
 
-    # Hard TP / SL
-    if EQUITY_TAKE_PROFIT_PERCENT and pnl >= EQUITY_TAKE_PROFIT_PERCENT:
-        ok, info = _route_open(symbol, -qty_live)
-        print(f"[EQ TP] {symbol}: {info} @ pnl={pnl:.4f}")
-        if ok:
-            realized = record_equity_close(symbol, entry, price, qty_live)
-            invalidate_portfolio_cache()
-            db_update_position(key, 0.0, 0.0, overwrite=True)
-            _eq_trail_sl.pop(symbol, None)
-            if meta:
-                _feed_close_reward(meta, symbol, realized, is_fx=False)
-        return bool(ok)
-
+    # Hard SL (always allowed)
     if EQUITY_STOP_LOSS_PERCENT and pnl <= EQUITY_STOP_LOSS_PERCENT:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ SL] {symbol}: {info} @ pnl={pnl:.4f}")
@@ -445,11 +454,28 @@ def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
+            _equity_position_open_ts.pop(key, None)
+            _equity_position_open_ts.pop(symbol, None)
             if meta:
                 _feed_close_reward(meta, symbol, realized, is_fx=False)
         return bool(ok)
 
-    # Breakeven + trailing
+    # Hard TP only after min-hold (avoid closing too soon)
+    if min_hold_ok and EQUITY_TAKE_PROFIT_PERCENT and pnl >= EQUITY_TAKE_PROFIT_PERCENT:
+        ok, info = _route_open(symbol, -qty_live)
+        print(f"[EQ TP] {symbol}: {info} @ pnl={pnl:.4f}")
+        if ok:
+            realized = record_equity_close(symbol, entry, price, qty_live)
+            invalidate_portfolio_cache()
+            db_update_position(key, 0.0, 0.0, overwrite=True)
+            _eq_trail_sl.pop(symbol, None)
+            _equity_position_open_ts.pop(key, None)
+            _equity_position_open_ts.pop(symbol, None)
+            if meta:
+                _feed_close_reward(meta, symbol, realized, is_fx=False)
+        return bool(ok)
+
+    # Breakeven + trailing (only after min-hold)
     if not EQUITY_TRAILING_ENABLED:
         return False
     if pnl < EQUITY_BREAKEVEN_AFTER_PCT:
@@ -463,7 +489,7 @@ def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
             print(f"[EQ TRAIL] {symbol}: raise SL → {candidate:.4f}")
 
     sl = _eq_trail_sl.get(symbol, None)
-    if sl and price <= sl:
+    if min_hold_ok and sl and price <= sl:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ TRAIL STOP] {symbol}: {info} | price={price:.4f} <= SL={sl:.4f}")
         if ok:
@@ -471,6 +497,8 @@ def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
+            _equity_position_open_ts.pop(key, None)
+            _equity_position_open_ts.pop(symbol, None)
             if meta:
                 _feed_close_reward(meta, symbol, realized, is_fx=False)
         return bool(ok)
@@ -571,6 +599,10 @@ def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, st
                 qty_live = float(get_equity_position_qty(symbol) or 0.0)
                 if qty_live <= 0.0:
                     continue
+                # Don't PG-close equity before min-hold (let positions run)
+                age_min = _equity_position_age_minutes(symbol)
+                if age_min < float(EQUITY_MIN_HOLD_MINUTES):
+                    continue
                 ok, info = _route_open(symbol, -abs(qty_live))
                 print(f"[PG] {symbol}: EQ close {'OK' if ok else 'FAIL'} — {info} | ur={ur:.4%}, rem={remain_frac}")
                 if ok:
@@ -578,6 +610,8 @@ def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, st
                     invalidate_portfolio_cache()
                     db_update_position(key, 0.0, 0.0, overwrite=True)
                     _eq_trail_sl.pop(symbol, None)
+                    _equity_position_open_ts.pop(key, None)
+                    _equity_position_open_ts.pop(symbol, None)
                     if meta:
                         _feed_close_reward(meta, symbol, realized, is_fx=False)
                     closed_syms.append(symbol)
@@ -802,7 +836,8 @@ def _rate_limit_ok(symbol: str) -> bool:
     q = _order_times.setdefault(symbol, [])
     while q and (now - q[0]) > window:
         q.pop(0)
-    return len(q) < MAX_TRADES_PER_HOUR
+    limit = RATE_LIMIT.get("EQUITY_MAX_TRADES_PER_HOUR", MAX_TRADES_PER_HOUR) if not is_forex(symbol) else MAX_TRADES_PER_HOUR
+    return len(q) < limit
 
 def _rate_mark(symbol: str) -> None:
     _order_times.setdefault(symbol, []).append(time.time())
@@ -971,10 +1006,15 @@ def run_live_trading():
                         price = 0.0 if live_qty == 0.0 else (_route_get_price(symbol) or 0.0)
                         db_update_position(key, live_qty, price, overwrite=True)
 
-                        if live_qty == 0.0 and _last_entry.get(key):
+                        if live_qty == 0.0:
+                            had_state = key in _last_entry or key in _equity_position_open_ts or key in _equity_sell_streak
                             _last_entry.pop(key, None)
                             _eq_trail_sl.pop(symbol, None)
-                            print(f"[REENTRY RESET] {symbol}: flat live position → cooldown cleared.")
+                            _equity_position_open_ts.pop(key, None)
+                            _equity_position_open_ts.pop(symbol, None)
+                            _equity_sell_streak.pop(key, None)
+                            if had_state:
+                                print(f"[RECON] {symbol}: flat → cooldown/equity state cleared.")
                 except Exception as rec_err:
                     print(f"[RECON ERROR] {symbol}: {rec_err}")
 
@@ -1114,6 +1154,7 @@ def run_live_trading():
                     latest_outcomes[symbol] = outcome or "HOLD"
 
                     if not outcome or outcome == "HOLD":
+                        _equity_sell_streak.pop(normalize_symbol(symbol), None)
                         sma_trend = analyze_sma(symbol) if is_forex(symbol) else None
                         _maybe_hedge_fx(symbol, sma_trend)
                         continue
@@ -1177,6 +1218,8 @@ def run_live_trading():
                             print(f"[ORDER] {symbol}: {info}")
                             if ok:
                                 _last_open_action[key] = decision_action or "CLASSIC"
+                                _equity_position_open_ts[key] = time.time()
+                                _equity_sell_streak.pop(key, None)
                                 _rate_mark(key)
                                 invalidate_portfolio_cache()
                                 db_update_position(key, +qty, price)
@@ -1200,15 +1243,24 @@ def run_live_trading():
                                 db_update_position(key, -qty, price)
                                 _remember_entry(key, "SHORT", price)
                         else:
-                            # Stocks: SELL == sell-to-close (no shorting).
+                            # Stocks: SELL == sell-to-close (no shorting). Require N consecutive SELL signals.
                             if cur_qty <= 0.0:
                                 print("[EQUITY] Short selling blocked or no holdings to reduce.")
+                                _equity_sell_streak.pop(key, None)
+                                continue
+                            streak = _equity_sell_streak.get(key, 0) + 1
+                            _equity_sell_streak[key] = streak
+                            if streak < EQUITY_SELL_CONFIRM_CYCLES:
+                                print(f"[EQUITY SELL CONFIRM] {symbol}: need {EQUITY_SELL_CONFIRM_CYCLES} SELLs, have {streak} — holding.")
                                 continue
                             sell_qty = cur_qty
                             entry = float(getattr(db_pos, "avg_price", 0.0) or 0.0)
                             ok, info = _route_open(symbol, -sell_qty)
                             print(f"[EQUITY CLOSE] {symbol}: {info}")
                             if ok:
+                                _equity_sell_streak.pop(key, None)
+                                _equity_position_open_ts.pop(key, None)
+                                _equity_position_open_ts.pop(symbol, None)
                                 realized_eq = record_equity_close(symbol, entry, price, sell_qty)
                                 _feed_close_reward(meta, symbol, realized_eq, is_fx=False)
                                 _rate_mark(key)
