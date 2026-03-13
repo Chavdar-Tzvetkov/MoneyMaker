@@ -7,7 +7,7 @@ It supports multiple strategies (SMA, Scalping) with automatic switching, live t
 
 ## 🚀 Features
 - 📈 **Multiple strategies** (SMA20/50 crossover, Scalping, hybrid AI logic)
-- 🔄 **Automatic strategy switching** based on market conditions
+- 🔄 **Automatic strategy switching** based on market conditions (AI meta-controller selects strategy per symbol in real time; no human interaction)
 - 💾 **Database-backed trade logging** using MSSQL (via SQLAlchemy/EFCore-style models)
 - ⏱ **Scheduler** for timed executions during market hours
 - 🧾 **PnL tracking** (Daily profit/loss monitoring)
@@ -74,6 +74,15 @@ python main.py
 Dry-run / simulation mode (if implemented):
 
 python main.py --dry-run
+
+## 🕐 Trading hours and holidays
+
+The bot respects **official trading hours and non-trading days** for both platforms:
+
+- **MT5 (Forex)**: 24/5 (Sunday 22:00 UTC → Friday 22:00 UTC). No trading on configured FX holiday dates (e.g. Christmas, New Year).
+- **Trading212 (US equities)**: NYSE/NASDAQ hours 09:30–16:00 US/Eastern, Mon–Fri. No trading on US market holidays (New Year, MLK Day, Presidents’ Day, Good Friday, Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving, Christmas, etc.). On early-close days (e.g. Christmas Eve), trading is allowed only until 13:00 ET.
+
+Calendar data is in `utils/market_calendar.py`; update `US_EQUITY_CLOSED`, `US_EQUITY_EARLY_CLOSE`, and `FX_CLOSED` annually.
 
 ## 📊 Database
 

@@ -68,7 +68,9 @@ EQUITY_BREAKEVEN_AFTER_PCT       = 0.0060   # start trailing after +0.6% in prof
 # - Stocks (T212): fractional shares (e.g., 0.2 share)
 TRADE_QUANTITY = 0.2
 
-# ----- AI meta-controller defaults (mirrors the env toggles we added) -----
+# ----- AI meta-controller: real-time automated strategy switching (no human interaction) -----
+# USE_META_DECIDER=1: LinUCB selects strategy per symbol each bar from market behaviour (SMA, RSI_MR, DONCHIAN, MACD, etc.).
+# USE_META_DECIDER=0: single ACTIVE_STRATEGY (SMA or SCALPING) still auto-switched by daily PnL (strategy_config).
 AI_META = {
     "USE_META_DECIDER": os.getenv("USE_META_DECIDER", "1") == "1",
     "MIN_UCB_MARGIN": float(os.getenv("AI_MIN_UCB_MARGIN", "0.05")),
