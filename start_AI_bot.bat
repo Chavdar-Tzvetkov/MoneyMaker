@@ -31,6 +31,10 @@ REM You can keep these toggles in .env; the next two are just overrides if neede
 set "USE_META_DECIDER=1"
 set "LLM_ENABLED=0"
 
+REM Optional: equity behaviour (or set in .env)
+REM set "EQUITY_MIN_HOLD_MINUTES=15"
+REM set "EQUITY_SELL_CONFIRM_CYCLES=2"
+
 echo [START] Running MoneyMaker (LIVE + AI)...
-python main.py --live-ai
+python Main.py --live-ai
 pause
