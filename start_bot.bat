@@ -10,7 +10,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 call ".venv\Scripts\activate"
 
-set "USE_META_DECIDER=0"
+set "USE_META_DECIDER=1"
 set "LLM_ENABLED=1"
 
 REM Optional: equity behaviour (or set in .env)
