@@ -5,8 +5,10 @@ import os
 from datetime import datetime, date, timedelta
 from typing import Optional
 
+import pytz
 from db.db_session import SessionLocal
 from db.models import DailyPnL
+import config
 
 # ---------------------------
 # Public knobs
@@ -46,11 +48,13 @@ _cleared_halt_on_start: bool = False  # one-shot for CLEAR_HALT_ON_START
 
 def get_today_pnl() -> float:
     """
-    Read today's PnL from DB. If no row yet, returns 0.0
+    Read today's PnL from DB. If no row yet, returns 0.0.
+    "Today" is the calendar day in BASE_TIMEZONE (e.g. Europe/Sofia for Bulgaria).
     """
     session = SessionLocal()
     try:
-        today = date.today()
+        tz = pytz.timezone(getattr(config, "BASE_TIMEZONE", "Europe/Sofia"))
+        today = datetime.now(tz).date()
         pnl_entry = session.query(DailyPnL).filter(DailyPnL.date == today).first()
         return float(pnl_entry.pnl) if pnl_entry else 0.0
     except Exception as e:
@@ -67,10 +71,20 @@ def get_today_pnl() -> float:
 def _utcnow() -> datetime:
     return datetime.utcnow()
 
+
+def _today_user() -> date:
+    """Calendar day in user's base timezone (e.g. Europe/Sofia for Bulgaria)."""
+    try:
+        tz = pytz.timezone(getattr(config, "BASE_TIMEZONE", "Europe/Sofia"))
+        return datetime.now(tz).date()
+    except Exception:
+        return date.today()
+
+
 def is_trading_halted() -> bool:
     """
     True when the circuit breaker has been tripped and the pause window is still active.
-    The pause automatically clears on a new UTC day (fresh PnL).
+    The pause automatically clears on a new calendar day (user timezone) for fresh PnL.
     When CIRCUIT_BREAKER_ENABLED is False, always returns False.
     """
     global _halt_until_utc, _last_pnl_date, _cleared_halt_on_start
@@ -80,9 +94,9 @@ def is_trading_halted() -> bool:
         _clear_halt()
         _cleared_halt_on_start = True  # one-shot: don't clear again this process
     now = _utcnow()
-    today = date.today()
+    today = _today_user()
 
-    # Clear breaker on day change
+    # Clear breaker on day change (user's calendar day)
     if _last_pnl_date is not None and _last_pnl_date != today:
         _clear_halt()
         _last_pnl_date = today
@@ -92,7 +106,7 @@ def is_trading_halted() -> bool:
 def _trip_halt(minutes: int) -> None:
     global _halt_until_utc, _last_pnl_date
     _halt_until_utc = _utcnow() + timedelta(minutes=minutes)
-    _last_pnl_date = date.today()
+    _last_pnl_date = _today_user()
     print(f"[Strategy][HALT] Circuit breaker tripped → halting trading for {minutes} min (until {_halt_until_utc:%Y-%m-%d %H:%M:%S} UTC)")
 
 def _clear_halt() -> None:
@@ -125,7 +139,7 @@ def switch_strategy_if_needed(equity: Optional[float] = None) -> str:
     global ACTIVE_STRATEGY, _last_switch_utc, _last_pnl_date, _cleared_halt_on_start
 
     pnl_abs = get_today_pnl()
-    _last_pnl_date = date.today()
+    _last_pnl_date = _today_user()
 
     # Daily PnL as fraction of equity (DB stores absolute currency)
     if equity is not None and float(equity) > 0:

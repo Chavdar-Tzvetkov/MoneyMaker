@@ -62,6 +62,10 @@ MT5_PASSWORD=your_password
 MT5_SERVER=BenchMark-Server
 DB_CONNECTION_STRING=mssql+pyodbc://username:password@localhost/MoneyMakerDB?driver=ODBC+Driver+17+for+SQL+Server
 
+**Same bot, two platforms:** The bot trades **MT5 (forex)** and **Trading212 (equities)** in one process. Each platform uses its own account and budget: FX position sizing uses MT5 equity, equity sizing uses T212 equity. Circuit breaker uses **combined** equity (MT5 + T212) by default. Optional in .env: `REFERENCE_EQUITY_MT5=9500` and `REFERENCE_EQUITY_T212=4200` to pin budgets and reduce API calls.
+
+**Base timezone (e.g. Bulgaria):** Set `BASE_TIMEZONE=Europe/Sofia` so “today” for daily PnL and circuit-breaker rollover follows your local calendar day.
+
 
 ## Running the Bot
 

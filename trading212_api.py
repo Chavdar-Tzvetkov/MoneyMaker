@@ -65,6 +65,11 @@ _BACKOFF_UNTIL = 0.0
 _BACKOFF_CURR = _BACKOFF_INIT
 _LAST_PORTFOLIO_FETCH_TS = 0.0  # last time we actually sent a GET (for min interval)
 
+# Account info cache (avoid calling account/info every cycle → 429)
+_ACCOUNT_INFO_CACHE: Optional[Dict[str, Any]] = None
+_ACCOUNT_INFO_CACHE_TS = 0.0
+_ACCOUNT_INFO_TTL = float(os.getenv("T212_ACCOUNT_INFO_TTL_SEC", "60"))
+
 # manual overrides for tricky dual-class / aliases
 _TICKER_OVERRIDES = {
     "GOOGL": "GOOGL_US_EQ",
@@ -231,15 +236,27 @@ def _ticker_to_symbol(ticker: str) -> str:
 # ---------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------
-def get_account_info() -> Optional[Dict[str, Any]]:
+def get_account_info(force: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    T212 account/info (totalValue, etc.). Cached for T212_ACCOUNT_INFO_TTL_SEC (default 60s)
+    to avoid 429 from calling every trading cycle.
+    """
+    global _ACCOUNT_INFO_CACHE, _ACCOUNT_INFO_CACHE_TS
     if not BASE_URL or not API_KEY:
-        return None
+        return _ACCOUNT_INFO_CACHE
+    now = time.time()
+    if not force and _ACCOUNT_INFO_CACHE is not None and (now - _ACCOUNT_INFO_CACHE_TS) < _ACCOUNT_INFO_TTL:
+        return _ACCOUNT_INFO_CACHE
     url = f"{BASE_URL}/api/v0/equity/account/info"
     info = _safe_request("GET", url)
+    if isinstance(info, dict) and not info.get("_non_json"):
+        _ACCOUNT_INFO_CACHE = info
+        _ACCOUNT_INFO_CACHE_TS = now
+        return info
     if isinstance(info, dict) and info.get("_non_json"):
-        print("[T212] Account info not available.")
-        return None
-    return info if isinstance(info, dict) else None
+        if T212_DEBUG:
+            print("[T212] Account info not available.")
+    return _ACCOUNT_INFO_CACHE
 
 def list_open_positions(force: bool = False) -> Optional[List[Dict[str, Any]]]:
     """

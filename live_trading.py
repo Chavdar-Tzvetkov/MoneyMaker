@@ -83,6 +83,9 @@ from config import (
     STOP_LOSS_PERCENT,
     FX_RISK_PER_TRADE_FRAC,
     EQ_RISK_PER_TRADE_FRAC,
+    REFERENCE_EQUITY_MT5,
+    REFERENCE_EQUITY_T212,
+    BASE_TIMEZONE,
     MAX_POSITIONS_PER_SYMBOL,
     REENTRY_COOLDOWN_SEC,
     REENTRY_DELTA_PCT,
@@ -934,9 +937,13 @@ def _compute_risk_based_quantity(symbol: str, price: float) -> float:
         return base_qty
 
     if is_forex(symbol):
-        # FX sizing: risk = equity * FX_RISK_PER_TRADE_FRAC,
+        # FX sizing: risk = equity * FX_RISK_PER_TRADE_FRAC (MT5 budget; use REFERENCE_EQUITY_MT5 if set)
         # per-lot risk ≈ price * |STOP_LOSS_PERCENT|
-        eq = mt5_get_equity()
+        eq = float(REFERENCE_EQUITY_MT5) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else mt5_get_equity()
+        if eq is not None:
+            eq = float(eq or 0.0)
+        else:
+            eq = 0.0
         sl_frac = abs(float(STOP_LOSS_PERCENT or 0.0))
         if eq <= 0.0 or sl_frac <= 0.0:
             return base_qty or 0.1
@@ -950,19 +957,21 @@ def _compute_risk_based_quantity(symbol: str, price: float) -> float:
         # Keep within a sane range; the MT5 API will cap by margin as well.
         return max(0.01, min(lots, 5.0))
 
-    # Equity sizing: risk = equity * EQ_RISK_PER_TRADE_FRAC,
+    # Equity sizing: risk = equity * EQ_RISK_PER_TRADE_FRAC (T212 budget; use REFERENCE_EQUITY_T212 if set)
     # per-share risk ≈ price * |EQUITY_STOP_LOSS_PERCENT|
-    try:
-        info = get_account_info() or {}
-        # Use a conservative notion of equity; fall back to 5000 if unknown.
-        eq_val = float(
-            info.get("totalValue")
-            or info.get("investedValue")
-            or info.get("freeCash")
-            or 5000.0
-        )
-    except Exception:
-        eq_val = 5000.0
+    if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0:
+        eq_val = float(REFERENCE_EQUITY_T212)
+    else:
+        try:
+            info = get_account_info() or {}
+            eq_val = float(
+                info.get("totalValue")
+                or info.get("investedValue")
+                or info.get("freeCash")
+                or 5000.0
+            )
+        except Exception:
+            eq_val = 5000.0
 
     sl_frac_eq = abs(float(EQUITY_STOP_LOSS_PERCENT or 0.0))
     if eq_val <= 0.0 or sl_frac_eq <= 0.0:
@@ -1000,6 +1009,7 @@ def run_live_trading():
     print(f"Tracking {len(all_symbols)} symbols")
     print(f"[AI-KNOBS] min_margin={os.getenv('AI_MIN_UCB_MARGIN','0.00')} ucb_floor={os.getenv('AI_UCB_FLOOR','-1.00')} uncertainty_max={MAX_ACCEPTABLE_UNCERTAINTY}")
     print(f"[LLM-KNOBS] enabled={int(LLM_ENABLED)} mode={LLM_MODE} min_conf={LLM_MIN_CONF}")
+    print(f"[USER] base_tz={BASE_TIMEZONE} | MT5_ref={REFERENCE_EQUITY_MT5 or 'live'} T212_ref={REFERENCE_EQUITY_T212 or 'live'}")
     print("==================================================\n")
 
     # One-time T212 probe & reconciliation (single portfolio fetch to avoid 429 at startup)
@@ -1064,16 +1074,19 @@ def run_live_trading():
                 except Exception as rec_err:
                     print(f"[RECON ERROR] {symbol}: {rec_err}")
 
-            # Strategy switcher: use combined MT5 + T212 equity so circuit breaker reflects total capital
+            # Strategy switcher: combined MT5 + T212 equity (per-platform budgets; optional fixed ref from config)
             try:
-                mt5_eq = mt5_get_equity()
-                mt5_eq = float(mt5_eq or 0.0) if mt5_eq is not None else 0.0
-                t212_eq = 0.0
-                try:
-                    info = get_account_info() or {}
-                    t212_eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 0.0)
-                except Exception:
-                    pass
+                mt5_eq = float(REFERENCE_EQUITY_MT5 or 0.0) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else None
+                if mt5_eq is None:
+                    e = mt5_get_equity()
+                    mt5_eq = float(e or 0.0) if e is not None else 0.0
+                t212_eq = float(REFERENCE_EQUITY_T212 or 0.0) if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0 else None
+                if t212_eq is None:
+                    try:
+                        info = get_account_info() or {}
+                        t212_eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 0.0)
+                    except Exception:
+                        t212_eq = 0.0
                 ref_equity = mt5_eq + t212_eq
                 if ref_equity <= 0:
                     ref_equity = 5000.0

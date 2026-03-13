@@ -3,6 +3,15 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+# ----- User base (location) and per-platform budgets -----
+# Base timezone for "today" (PnL day rollover, logs). Bulgaria = Europe/Sofia (EET/EEST).
+BASE_TIMEZONE = os.getenv("BASE_TIMEZONE", "Europe/Sofia")
+
+# Optional fixed reference equity per platform (USD). If set, used for risk sizing and circuit breaker
+# instead of live API equity. Lets you run one bot with MT5 ~9500 and T212 ~4200 without over-calling APIs.
+REFERENCE_EQUITY_MT5 = float(os.getenv("REFERENCE_EQUITY_MT5", "0"))   # 0 = use live MT5 equity
+REFERENCE_EQUITY_T212 = float(os.getenv("REFERENCE_EQUITY_T212", "0"))  # 0 = use live T212 equity
+
 # ----- SMA Strategy Tuning (split by asset class) -----
 SMA_WINDOWS = {
     "forex":  {"fast": 20, "slow": 50},
