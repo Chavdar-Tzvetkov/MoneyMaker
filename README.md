@@ -84,6 +84,25 @@ The bot respects **official trading hours and non-trading days** for both platfo
 
 Calendar data is in `utils/market_calendar.py`; update `US_EQUITY_CLOSED`, `US_EQUITY_EARLY_CLOSE`, and `FX_CLOSED` annually.
 
+## 📦 Packaging as executable (Windows)
+
+You can build a standalone console executable so you don’t need Python installed on the target machine:
+
+1. In the project root (with venv activated), run:
+   ```bat
+   build.bat
+   ```
+2. The output is **`dist\MoneyMaker\`**: it contains `MoneyMaker.exe` and all dependencies.
+3. Copy your **`.env`** (and optionally a **`state\`** folder for LinUCB) into **`dist\MoneyMaker\`**.
+4. Run from that folder, e.g.:
+   ```bat
+   cd dist\MoneyMaker
+   MoneyMaker.exe --live
+   ```
+   Or create a shortcut to `MoneyMaker.exe` and add `--live` in the shortcut’s “Target” (optional).
+
+Requires **PyInstaller** (installed automatically by `build.bat`). The exe uses your **`icons\moneymaker_bot_icon.ico`** if present.
+
 ## 📊 Database
 
 Trades, positions, and daily PnL are logged in MSSQL.
