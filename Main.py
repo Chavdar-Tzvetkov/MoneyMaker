@@ -1,4 +1,4 @@
-# main.py
+# Main.py — entry point for live/scheduler/AI modes
 import argparse
 import os
 import sys
