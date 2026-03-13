@@ -6,10 +6,15 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 
 import pytz
+from sqlalchemy import text
 from db.db_session import SessionLocal
 from db.models import DailyPnL
 import config
 from utils.symbols import is_forex
+
+# When DailyPnL table lacks pnl_fx/pnl_equity columns we use legacy reads (only pnl). Set to True on first 42S22.
+_daily_pnl_legacy: Optional[bool] = None
+_daily_pnl_legacy_logged: bool = False
 
 # ---------------------------
 # Public knobs
