@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 import os
 import time
 import numpy as np
@@ -8,6 +8,7 @@ import pandas as pd
 
 from .policy_linucb import LinUCBArm, LinUCBPolicy
 from .features import compute_features
+from . import regime as _regime_mod
 
 ACTIONS = {
     # --- Existing arms ---
@@ -29,7 +30,43 @@ ACTIONS = {
     "Hold":             ("HOLD", {}),
 }
 
+# Platform-specific strategy sets: FX (MT5) vs equity (T212).
+# FX: short-term, mean-reversion, scalping. Equity: trend, swing.
+ACTION_NAMES_FX: List[str] = [
+    "Scalping", "RSI_MR", "RangeMR", "Donchian_Break", "ZScore_MR", "Bollinger",
+    "SMA_conservative", "Hold",
+]
+ACTION_NAMES_EQUITY: List[str] = [
+    "SMA_conservative", "SMA_aggressive", "MACD_Trend", "Supertrend", "EMA_Cross",
+    "Breakout", "Bollinger", "Hold",
+]
+
+# Regime-specific subsets: prefer trend-following in "trend", mean-reversion in "range".
+# Used when regime filter is enabled (get_regime() from bars).
+ACTION_NAMES_FX_TREND: List[str] = [
+    "Donchian_Break", "SMA_conservative", "Bollinger", "Hold",
+]
+ACTION_NAMES_FX_RANGE: List[str] = [
+    "Scalping", "RSI_MR", "RangeMR", "ZScore_MR", "Bollinger", "SMA_conservative", "Hold",
+]
+ACTION_NAMES_EQUITY_TREND: List[str] = [
+    "SMA_conservative", "SMA_aggressive", "MACD_Trend", "Supertrend", "EMA_Cross", "Breakout", "Bollinger", "Hold",
+]
+ACTION_NAMES_EQUITY_RANGE: List[str] = [
+    "Bollinger", "SMA_conservative", "EMA_Cross", "Hold",
+]
+
 STATE_DIR = os.path.join("state", "linucb")
+
+
+def _is_forex(symbol: Optional[str]) -> bool:
+    if not symbol:
+        return False
+    try:
+        from utils.symbols import is_forex
+        return is_forex(symbol)
+    except Exception:
+        return False
 
 
 @dataclass
@@ -78,14 +115,21 @@ class MetaController:
 
         os.makedirs(STATE_DIR, exist_ok=True)
 
-        # global (back-compat) policy
-        self._global_policy = self._new_policy()
+        # global (back-compat) policy: all arms
+        self._global_policy = self._new_policy(asset_class=None)
         self._load_policy_from_disk("__GLOBAL__", self._global_policy)
 
     # ---------------- internal: policy management & persistence ---------------
 
-    def _new_policy(self) -> LinUCBPolicy:
-        arms = {name: LinUCBArm(d=self.d, alpha=self.alpha) for name in ACTIONS.keys()}
+    def _new_policy(self, asset_class: Optional[str] = None) -> LinUCBPolicy:
+        """Build a policy with arms for the given asset class (fx / equity) or all arms if None."""
+        if asset_class == "fx":
+            names = ACTION_NAMES_FX
+        elif asset_class == "equity":
+            names = ACTION_NAMES_EQUITY
+        else:
+            names = list(ACTIONS.keys())
+        arms = {name: LinUCBArm(d=self.d, alpha=self.alpha) for name in names}
         return LinUCBPolicy(arms)
 
     def _state_path(self, key: str) -> str:
@@ -96,7 +140,8 @@ class MetaController:
         if not symbol:
             return self._global_policy
         if symbol not in self._policies:
-            pol = self._new_policy()
+            asset = "fx" if _is_forex(symbol) else "equity"
+            pol = self._new_policy(asset_class=asset)
             self._load_policy_from_disk(symbol, pol)
             self._policies[symbol] = pol
         return self._policies[symbol]
@@ -192,13 +237,36 @@ class MetaController:
 
     # ---------------- public API ----------------------------------------------
 
+    def _allowed_actions_for_regime(self, symbol: Optional[str], regime: str) -> Optional[List[str]]:
+        """Return list of action names allowed for this (platform, regime), or None to allow all."""
+        if not symbol or regime not in ("trend", "range"):
+            return None
+        is_fx = _is_forex(symbol)
+        if is_fx:
+            return ACTION_NAMES_FX_TREND if regime == "trend" else ACTION_NAMES_FX_RANGE
+        return ACTION_NAMES_EQUITY_TREND if regime == "trend" else ACTION_NAMES_EQUITY_RANGE
+
     def decide(self, df: pd.DataFrame, symbol: Optional[str] = None) -> MetaDecision:
         """
         Choose an action. Pass `symbol` to enable per-symbol learning (recommended).
+        When regime filter is enabled, restricts to trend vs range arms per platform.
         """
         x = compute_features(df)
         policy = self._get_policy(symbol)
         scores = self._scores(policy, x)
+
+        # Regime filter: prefer trend/range arms per platform
+        regime_enabled = os.getenv("REGIME_FILTER_ENABLED", "1") == "1"
+        if regime_enabled and symbol and df is not None and not df.empty:
+            adx_period = int(os.getenv("REGIME_ADX_PERIOD", "14"))
+            adx_thresh = float(os.getenv("REGIME_ADX_TREND_THRESHOLD", "25.0"))
+            regime = _regime_mod.get_regime(df, adx_period=adx_period, trend_threshold=adx_thresh)
+            allowed = self._allowed_actions_for_regime(symbol, regime)
+            if allowed:
+                scores = {k: v for k, v in scores.items() if k in allowed}
+            if not scores:
+                scores = self._scores(policy, x)  # fallback: use all arms
+
         best_name = max(scores, key=scores.get)
 
         gated = self._apply_uncertainty_gate(symbol or "__GLOBAL__", best_name, scores)

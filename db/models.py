@@ -14,6 +14,9 @@ class DailyPnL(Base):
     id = Column(Integer, primary_key=True)
     date = Column(Date, unique=True, nullable=False)
     pnl = Column(Float, nullable=False, default=0.0)
+    # Per-platform daily PnL (MT5 vs T212). If missing, run: ALTER TABLE DailyPnL ADD pnl_fx FLOAT DEFAULT 0; ADD pnl_equity FLOAT DEFAULT 0;
+    pnl_fx = Column(Float, nullable=True, default=0.0)
+    pnl_equity = Column(Float, nullable=True, default=0.0)
 
 class TradeLog(Base):
     __tablename__ = 'TradeLogs'

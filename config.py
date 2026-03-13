@@ -88,6 +88,20 @@ AI_META = {
     "MAX_ACCEPTABLE_UNCERTAINTY": float(os.getenv("MAX_ACCEPTABLE_UNCERTAINTY", "0.95")),
 }
 
+# ----- Regime filter: prefer trend vs range strategies from ADX -----
+# When enabled, the meta-controller restricts arms by market regime (trend => trend-following, range => mean-reversion).
+REGIME = {
+    "ENABLED": os.getenv("REGIME_FILTER_ENABLED", "1") == "1",
+    "ADX_PERIOD": int(os.getenv("REGIME_ADX_PERIOD", "14")),
+    "ADX_TREND_THRESHOLD": float(os.getenv("REGIME_ADX_TREND_THRESHOLD", "25.0")),
+}
+
+# ----- Profit-oriented behaviour (profitability cannot be guaranteed; these bias toward better R:R and learning) -----
+PROFIT = {
+    "MIN_RISK_REWARD_RATIO": float(os.getenv("MIN_RISK_REWARD_RATIO", "0.0")),   # 0 = off; e.g. 1.5 = require TP/SL ratio >= 1.5 before opening
+    "REWARD_PROFIT_BIAS": float(os.getenv("REWARD_PROFIT_BIAS", "1.0")),         # scale positive rewards (e.g. 1.2 = 20% bonus for wins)
+}
+
 
 # ----- Rate limiting (per symbol) -----
 RATE_LIMIT = {

@@ -112,6 +112,8 @@ from config import (
     SPIKE_FADE_ATR_MULT,
     SPIKE_FADE_MIN_RET_PCT,
     SPIKE_FADE_COOLDOWN_SEC,
+    # Profit-oriented (profitability not guaranteed)
+    PROFIT,
 )
 
 # ==============================================================================
@@ -721,7 +723,23 @@ def _estimate_reward(df, outcome: Optional[str]) -> float:
 
 # --------------------------- Pre-trade confirmation --------------------------
 def _pretrade_filter(symbol: str, outcome: Optional[str], df=None) -> Optional[str]:
-    if not PRECONFIRM_ENABLED or outcome not in ("BUY", "SELL"):
+    if outcome not in ("BUY", "SELL"):
+        return outcome
+
+    # Min risk:reward: skip opening if configured TP/SL ratio is below threshold (profit-oriented)
+    min_rr = float(PROFIT.get("MIN_RISK_REWARD_RATIO", 0.0))
+    if min_rr > 0:
+        if is_forex(symbol):
+            tp, sl = abs(TAKE_PROFIT_PERCENT), abs(STOP_LOSS_PERCENT)
+        else:
+            tp, sl = abs(EQUITY_TAKE_PROFIT_PERCENT), abs(EQUITY_STOP_LOSS_PERCENT)
+        if sl > 0:
+            rr = tp / sl
+            if rr < min_rr:
+                print(f"[PRECHECK] {symbol}: block {outcome} (R:R {rr:.2f} < {min_rr:.2f})")
+                return "HOLD"
+
+    if not PRECONFIRM_ENABLED:
         return outcome
 
     try:
@@ -914,6 +932,10 @@ def _feed_close_reward(meta, symbol: str, realized_pnl: float, is_fx: bool) -> N
         scale = max(eq * 0.01, 1.0)
         reward = float(realized_pnl) / scale
         reward = max(-2.0, min(2.0, reward))
+        # Profit bias: scale up positive rewards so the bandit leans toward profitable arms
+        profit_bias = float(PROFIT.get("REWARD_PROFIT_BIAS", 1.0))
+        if profit_bias != 1.0 and reward > 0:
+            reward = max(-2.0, min(2.0, reward * profit_bias))
         df = load_recent_bars(symbol, lookback="2d", interval=AI_BAR_INTERVAL)
         if df is not None and not df.empty:
             meta.learn(df, action, reward, symbol=symbol)
@@ -1083,7 +1105,7 @@ def run_live_trading():
                 except Exception as rec_err:
                     print(f"[RECON ERROR] {symbol}: {rec_err}")
 
-            # Strategy switcher: combined MT5 + T212 (use fixed ref from config to avoid 429 and match your budgets)
+            # Strategy switcher: separate MT5 and T212 (per-account circuit breakers)
             try:
                 mt5_eq = float(REFERENCE_EQUITY_MT5) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else None
                 if mt5_eq is None:
@@ -1096,20 +1118,22 @@ def run_live_trading():
                         t212_eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 0.0)
                     except Exception:
                         t212_eq = 0.0
-                ref_equity = mt5_eq + t212_eq
-                if ref_equity <= 0:
-                    ref_equity = 5000.0
+                if mt5_eq <= 0:
+                    mt5_eq = 5000.0
+                if t212_eq <= 0:
+                    t212_eq = 5000.0
             except Exception:
-                ref_equity = 5000.0
-            switch_strategy_if_needed(equity=ref_equity)
+                mt5_eq = 5000.0
+                t212_eq = 5000.0
+            switch_strategy_if_needed(mt5_equity=mt5_eq, t212_equity=t212_eq)
 
             # --------------------------- Trading pass --------------------------
             latest_outcomes: Dict[str, str] = {}
 
             for symbol in all_symbols:
                 try:
-                    # Respect global circuit breaker (daily loss) before per-symbol logic.
-                    if is_trading_halted():
+                    # Per-account circuit breaker: skip FX if MT5 halted, skip equity if T212 halted.
+                    if is_trading_halted(symbol):
                         latest_outcomes[symbol] = "HOLD"
                         continue
 

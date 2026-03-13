@@ -22,8 +22,7 @@ def _today_user() -> date:
 
 def reset_today_pnl() -> bool:
     """
-    Set today's DailyPnL row to 0. Returns True if a row was updated or created.
-    Use when you want to clear the circuit breaker's "today" loss (e.g. after a bad run or data fix).
+    Set today's DailyPnL row to 0 (pnl, pnl_fx, pnl_equity). Returns True if a row was updated or created.
     """
     s = SessionLocal()
     try:
@@ -31,8 +30,13 @@ def reset_today_pnl() -> bool:
         row = s.query(DailyPnL).filter(DailyPnL.date == today).first()
         if row:
             row.pnl = 0.0
+            if hasattr(row, "pnl_fx"):
+                row.pnl_fx = 0.0
+            if hasattr(row, "pnl_equity"):
+                row.pnl_equity = 0.0
         else:
-            s.add(DailyPnL(date=today, pnl=0.0))
+            row = DailyPnL(date=today, pnl=0.0, pnl_fx=0.0, pnl_equity=0.0)
+            s.add(row)
         s.commit()
         return True
     except SQLAlchemyError:
@@ -42,17 +46,55 @@ def reset_today_pnl() -> bool:
         s.close()
 
 
+def _ensure_row(s, today: date):
+    row = s.query(DailyPnL).filter(DailyPnL.date == today).first()
+    if not row:
+        row = DailyPnL(date=today, pnl=0.0, pnl_fx=0.0, pnl_equity=0.0)
+        s.add(row)
+    return row
+
+
 def add_to_daily_pnl(delta: float) -> None:
     """
-    Low-level helper: add realized PnL to today's aggregate row in DailyPnL.
-    This function is the single writer for the DailyPnL table.
+    Low-level: add to today's total pnl only (legacy). Prefer add_to_daily_pnl_fx / add_to_daily_pnl_equity.
     """
     s = SessionLocal()
     try:
-        row = s.query(DailyPnL).filter(DailyPnL.date == date.today()).first()
-        if not row:
-            row = DailyPnL(date=date.today(), pnl=0.0)
-            s.add(row)
+        today = _today_user()
+        row = _ensure_row(s, today)
+        # Only update total pnl; fx/equity are updated by add_to_daily_pnl_fx/equity
+        row.pnl = float(row.pnl or 0.0) + float(delta or 0.0)
+        s.commit()
+    except SQLAlchemyError:
+        s.rollback()
+    finally:
+        s.close()
+
+
+def add_to_daily_pnl_fx(delta: float) -> None:
+    """Add realized FX (MT5) PnL to today's row. Keeps pnl_fx and pnl (total) in sync."""
+    s = SessionLocal()
+    try:
+        today = _today_user()
+        row = _ensure_row(s, today)
+        pnl_fx = getattr(row, "pnl_fx", None)
+        row.pnl_fx = float(pnl_fx or 0.0) + float(delta or 0.0)
+        row.pnl = float(row.pnl or 0.0) + float(delta or 0.0)
+        s.commit()
+    except SQLAlchemyError:
+        s.rollback()
+    finally:
+        s.close()
+
+
+def add_to_daily_pnl_equity(delta: float) -> None:
+    """Add realized equity (T212) PnL to today's row. Keeps pnl_equity and pnl (total) in sync."""
+    s = SessionLocal()
+    try:
+        today = _today_user()
+        row = _ensure_row(s, today)
+        pnl_eq = getattr(row, "pnl_equity", None)
+        row.pnl_equity = float(pnl_eq or 0.0) + float(delta or 0.0)
         row.pnl = float(row.pnl or 0.0) + float(delta or 0.0)
         s.commit()
     except SQLAlchemyError:
@@ -63,15 +105,11 @@ def add_to_daily_pnl(delta: float) -> None:
 
 def record_fx_close_profit(realized_profit: float) -> float:
     """
-    Record realized FX PnL (as reported by MT5) into DailyPnL.
-
-    `realized_profit` is expected to be the broker's net profit for the
-    closed position, already in account currency (i.e., MT5 deal.profit).
-    Returns the value actually added for convenience.
+    Record realized FX PnL (MT5) into DailyPnL (pnl_fx + pnl).
     """
     profit = float(realized_profit or 0.0)
     if profit != 0.0:
-        add_to_daily_pnl(profit)
+        add_to_daily_pnl_fx(profit)
     return profit
 
 
@@ -109,7 +147,7 @@ def record_equity_close(
     net = gross - float(fees or 0.0)
 
     if net != 0.0:
-        add_to_daily_pnl(net)
+        add_to_daily_pnl_equity(net)
 
     # Best-effort enrichment of TradeLog for later analysis (no hard dependency).
     try:
