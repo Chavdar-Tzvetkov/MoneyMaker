@@ -3,23 +3,25 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+FEATURE_DIM = 11  # must match meta_controller d=11 and the assembled vector length
+
 def compute_features(df: pd.DataFrame) -> np.ndarray:
     """
     Expect df with columns: Open, High, Low, Close (yfinance style).
-    Returns a 10-dim feature vector for the meta-policy.
+    Returns an 11-dim feature vector for the meta-policy (ret1, vol, m5, m20, m50, delta, rng, trend, flat, atr_ratio, bias).
     """
     if df is None or df.empty:
-        return np.zeros(10, dtype=float)
+        return np.zeros(FEATURE_DIM, dtype=float)
 
     # Ensure required columns exist
     for col in ("Open", "High", "Low", "Close"):
         if col not in df.columns:
-            return np.zeros(10, dtype=float)
+            return np.zeros(FEATURE_DIM, dtype=float)
 
     # Drop obvious NaNs
     df = df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
     if df.empty:
-        return np.zeros(10, dtype=float)
+        return np.zeros(FEATURE_DIM, dtype=float)
 
     close = df["Close"].astype(float)
 
