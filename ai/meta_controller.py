@@ -52,7 +52,7 @@ class MetaController:
     def __init__(
         self,
         alpha: float = 0.6,
-        d: int = 10,
+        d: int = 11,
         *,
         min_ucb_margin: float = 0.05,     # require top-2 margin >= this
         ucb_floor: float = -0.10,         # require best UCB >= this
@@ -105,12 +105,24 @@ class MetaController:
             return
         try:
             data = np.load(path, allow_pickle=False)
+            d_target = self.d
             for name, arm in policy.arms.items():
                 A_key = f"A__{name}"
                 B_key = f"b__{name}"
                 if A_key in data and B_key in data:
-                    arm.A = data[A_key]
-                    arm.b = data[B_key]
+                    A, b = data[A_key], data[B_key]
+                    if A.shape[0] == d_target and b.shape[0] == d_target:
+                        arm.A = A
+                        arm.b = b
+                    elif A.shape[0] == d_target - 1 and d_target == 11:
+                        # Migrate 10-dim state to 11-dim (pad with identity / zeros)
+                        arm.A = np.eye(d_target, dtype=float)
+                        arm.A[:10, :10] = A
+                        arm.b = np.zeros((d_target, 1), dtype=float)
+                        arm.b[:10] = b
+                    else:
+                        arm.A = A
+                        arm.b = b
             # print(f"[AI] Loaded LinUCB state for {key} from {path}")
         except Exception as e:
             print(f"[AI] Failed to load LinUCB state for {key}: {e}")

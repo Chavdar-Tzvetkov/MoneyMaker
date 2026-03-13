@@ -51,6 +51,7 @@ from mt5_api import (
     modify_position_sl_tp as mt5_modify_sl_tp,
     is_symbol_tradable_now as mt5_is_tradable,
     get_account_equity as mt5_get_equity,
+    sync_new_mm_deals_to_pnl as mt5_sync_mm_deals_to_pnl,
 )
 
 from trading212_api import (
@@ -162,6 +163,8 @@ _order_times: Dict[str, List[float]] = {}
 _eq_trail_sl: Dict[str, float] = {}
 # Track AI arm (strategy) per symbol to log changes
 _last_ai_arm: Dict[str, str] = {}
+# Which meta-controller action last opened a position (for delayed reward on close)
+_last_open_action: Dict[str, str] = {}
 # HOLD streak tracker
 _hold_streak: Dict[str, int] = {}
 
@@ -291,10 +294,12 @@ def _route_open(symbol: str, quantity: float) -> Tuple[bool, str]:
     return (ok, "T212 order placed" if ok else "T212 order failed or not configured")
 
 
-def _route_close(symbol: str) -> Tuple[bool, str]:
+def _route_close(symbol: str) -> Tuple[bool, str, float]:
+    """Returns (success, message, realized_pnl). For T212, realized_pnl is 0 (handled by SELL path)."""
     if is_forex(symbol):
-        return mt5_close_position(to_mt5_symbol(symbol))
-    return (False, "T212 close handled by SELL order")
+        ok, msg, realized = mt5_close_position(to_mt5_symbol(symbol))
+        return (ok, msg, float(realized or 0.0))
+    return (False, "T212 close handled by SELL order", 0.0)
 
 def _analyze_classic(symbol: str) -> Optional[str]:
     return analyze_sma(symbol) if ACTIVE_STRATEGY == "SMA" else analyze_scalping(symbol)
@@ -350,7 +355,7 @@ def _manage_trailing(symbol: str, price: float):
 
 
 
-def _manage_time_stop(symbol: str, price: float):
+def _manage_time_stop(symbol: str, price: float, meta=None):
     """Close FX trades that stagnate beyond TIME_STOP_MIN without MIN_PROGRESS_R progress in R."""
     if not is_forex(symbol) or TIME_STOP_MIN <= 0:
         return
@@ -393,14 +398,16 @@ def _manage_time_stop(symbol: str, price: float):
     age_min = (now - open_time).total_seconds() / 60.0
 
     if age_min >= TIME_STOP_MIN and progress < MIN_PROGRESS_R:
-        ok, msg = mt5_close_position(to_mt5_symbol(symbol))
+        ok, msg, realized = mt5_close_position(to_mt5_symbol(symbol))
         print(f"[TIME-STOP] {symbol}: {'CLOSED' if ok else 'FAILED'} — age={age_min:.1f}m, progress={progress:.2f}R | {msg}")
         if ok:
             add_to_daily_pnl(0.0)  # accounting handled by position close capture
+            if meta and realized != 0.0:
+                _feed_close_reward(meta, symbol, realized, is_fx=True)
 
 
 # -------------------- Equity software stops / trailing -----------------------
-def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
+def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
     if not EQUITY_STOPS_ENABLED:
         return False
 
@@ -422,20 +429,24 @@ def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ TP] {symbol}: {info} @ pnl={pnl:.4f}")
         if ok:
-            record_equity_close(symbol, entry, price, qty_live)
+            realized = record_equity_close(symbol, entry, price, qty_live)
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
+            if meta:
+                _feed_close_reward(meta, symbol, realized, is_fx=False)
         return bool(ok)
 
     if EQUITY_STOP_LOSS_PERCENT and pnl <= EQUITY_STOP_LOSS_PERCENT:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ SL] {symbol}: {info} @ pnl={pnl:.4f}")
         if ok:
-            record_equity_close(symbol, entry, price, qty_live)
+            realized = record_equity_close(symbol, entry, price, qty_live)
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
+            if meta:
+                _feed_close_reward(meta, symbol, realized, is_fx=False)
         return bool(ok)
 
     # Breakeven + trailing
@@ -456,10 +467,12 @@ def _equity_manage_soft_stops(symbol: str, price: float) -> bool:
         ok, info = _route_open(symbol, -qty_live)
         print(f"[EQ TRAIL STOP] {symbol}: {info} | price={price:.4f} <= SL={sl:.4f}")
         if ok:
-            record_equity_close(symbol, entry, price, qty_live)
+            realized = record_equity_close(symbol, entry, price, qty_live)
             invalidate_portfolio_cache()
             db_update_position(key, 0.0, 0.0, overwrite=True)
             _eq_trail_sl.pop(symbol, None)
+            if meta:
+                _feed_close_reward(meta, symbol, realized, is_fx=False)
         return bool(ok)
 
     return False
@@ -498,7 +511,7 @@ def _age_ok_for_pg(db_pos) -> bool:
         pass
     return True
 
-def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, str]] = None) -> None:
+def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, str]] = None, meta=None) -> None:
     if not PG_ENABLED:
         return
 
@@ -547,10 +560,12 @@ def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, st
                 continue
 
             if is_forex(symbol):
-                ok, msg = mt5_close_position(to_mt5_symbol(symbol))
+                ok, msg, realized = mt5_close_position(to_mt5_symbol(symbol))
                 print(f"[PG] {symbol}: FX close {'OK' if ok else 'FAIL'} — {msg} | ur={ur:.4%}, rem={remain_frac}")
                 if ok:
                     db_update_position(key, 0.0, 0.0, overwrite=True)
+                    if meta and realized != 0.0:
+                        _feed_close_reward(meta, symbol, realized, is_fx=True)
                     closed_syms.append(symbol)
             else:
                 qty_live = float(get_equity_position_qty(symbol) or 0.0)
@@ -559,10 +574,12 @@ def _profit_guard_run(all_symbols: List[str], outcome_map: Optional[Dict[str, st
                 ok, info = _route_open(symbol, -abs(qty_live))
                 print(f"[PG] {symbol}: EQ close {'OK' if ok else 'FAIL'} — {info} | ur={ur:.4%}, rem={remain_frac}")
                 if ok:
-                    record_equity_close(symbol, entry, cur, qty_live)
+                    realized = record_equity_close(symbol, entry, cur, qty_live)
                     invalidate_portfolio_cache()
                     db_update_position(key, 0.0, 0.0, overwrite=True)
                     _eq_trail_sl.pop(symbol, None)
+                    if meta:
+                        _feed_close_reward(meta, symbol, realized, is_fx=False)
                     closed_syms.append(symbol)
 
         except Exception as e:
@@ -791,6 +808,34 @@ def _rate_mark(symbol: str) -> None:
     _order_times.setdefault(symbol, []).append(time.time())
 
 
+def _feed_close_reward(meta, symbol: str, realized_pnl: float, is_fx: bool) -> None:
+    """
+    Feed delayed reward into the meta-controller when a position closes.
+    Uses the action that opened the position (stored in _last_open_action) so
+    the AI learns from actual PnL, not just next-bar return.
+    """
+    if meta is None or realized_pnl == 0.0:
+        return
+    key = normalize_symbol(symbol)
+    action = _last_open_action.pop(key, None) or _last_open_action.pop(symbol, None)
+    if not action:
+        return
+    try:
+        if is_fx:
+            eq = mt5_get_equity()
+        else:
+            info = get_account_info() or {}
+            eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 5000.0)
+        scale = max(eq * 0.01, 1.0)
+        reward = float(realized_pnl) / scale
+        reward = max(-2.0, min(2.0, reward))
+        df = load_recent_bars(symbol, lookback="2d", interval=AI_BAR_INTERVAL)
+        if df is not None and not df.empty:
+            meta.learn(df, action, reward, symbol=symbol)
+    except Exception as e:
+        print(f"[AI REWARD] skip feed for {symbol}: {e}")
+
+
 def _compute_risk_based_quantity(symbol: str, price: float) -> float:
     """
     Compute a position size based on configured per-trade risk fractions.
@@ -905,6 +950,14 @@ def run_live_trading():
 
     while True:
         try:
+            # Ensure any new MM-tagged MT5 deals (including SL/TP or manual closes)
+            # are reflected in DailyPnL even if they didn't go through the explicit
+            # close_position_market() path.
+            try:
+                mt5_sync_mm_deals_to_pnl()
+            except Exception as e:
+                print(f"[MT5 PNL SYNC] skipped this cycle: {e}")
+
             # --------------------------- Auto-reconciliation -------------------
             for symbol in all_symbols:
                 try:
@@ -949,16 +1002,18 @@ def run_live_trading():
 
                     # Manage stops/trailing
                     _manage_trailing(symbol, price)
-                    _manage_time_stop(symbol, price)
+                    _manage_time_stop(symbol, price, meta=meta)
                     # Optionally force-flat at end of broker session (FOREX only)
                     if FORCE_FLAT_AT_SESSION_END and is_forex(symbol):
                         mt5_sym = to_mt5_symbol(symbol)
                         pos = mt5_get_position(mt5_sym)
                         if pos and not mt5_is_tradable(mt5_sym):
-                            ok, msg = mt5_close_position(mt5_sym)
+                            ok, msg, realized = mt5_close_position(mt5_sym)
                             print(f"[SESSION-FLAT] {symbol}: {'CLOSED' if ok else 'FAILED'} — {msg}")
+                            if ok and meta and realized != 0.0:
+                                _feed_close_reward(meta, symbol, realized, is_fx=True)
       # FX broker-side
-                    if not is_forex(symbol) and _equity_manage_soft_stops(symbol, price):
+                    if not is_forex(symbol) and _equity_manage_soft_stops(symbol, price, meta=meta):
                         latest_outcomes[symbol] = "HOLD"
                         continue
 
@@ -1104,13 +1159,16 @@ def run_live_trading():
                     if outcome == "BUY":
                         if is_forex(symbol):
                             if cur_qty < 0.0:
-                                okc, infoc = _route_close(symbol)
+                                okc, infoc, realized_fx = _route_close(symbol)
                                 print(f"[FLIP CLOSE] {symbol}: {infoc}")
                                 if okc:
                                     db_update_position(key, +abs(cur_qty), price)
+                                    if realized_fx != 0.0:
+                                        _feed_close_reward(meta, symbol, realized_fx, is_fx=True)
                             ok, info = _route_open(symbol, qty)
                             print(f"[ORDER] {symbol}: {info}")
                             if ok:
+                                _last_open_action[key] = decision_action or "CLASSIC"
                                 _rate_mark(key)
                                 db_update_position(key, +qty, price)
                                 _remember_entry(key, "LONG", price)
@@ -1118,6 +1176,7 @@ def run_live_trading():
                             ok, info = _route_open(symbol, qty)
                             print(f"[ORDER] {symbol}: {info}")
                             if ok:
+                                _last_open_action[key] = decision_action or "CLASSIC"
                                 _rate_mark(key)
                                 invalidate_portfolio_cache()
                                 db_update_position(key, +qty, price)
@@ -1127,13 +1186,16 @@ def run_live_trading():
                     elif outcome == "SELL":
                         if is_forex(symbol):
                             if cur_qty > 0.0:
-                                okc, infoc = _route_close(symbol)
+                                okc, infoc, realized_fx = _route_close(symbol)
                                 print(f"[FLIP CLOSE] {symbol}: {infoc}")
                                 if okc:
                                     db_update_position(key, -abs(cur_qty), price)
+                                    if realized_fx != 0.0:
+                                        _feed_close_reward(meta, symbol, realized_fx, is_fx=True)
                             ok, info = _route_open(symbol, -qty)
                             print(f"[ORDER] {symbol}: {info}")
                             if ok:
+                                _last_open_action[key] = decision_action or "CLASSIC"
                                 _rate_mark(key)
                                 db_update_position(key, -qty, price)
                                 _remember_entry(key, "SHORT", price)
@@ -1147,7 +1209,8 @@ def run_live_trading():
                             ok, info = _route_open(symbol, -sell_qty)
                             print(f"[EQUITY CLOSE] {symbol}: {info}")
                             if ok:
-                                record_equity_close(symbol, entry, price, sell_qty)
+                                realized_eq = record_equity_close(symbol, entry, price, sell_qty)
+                                _feed_close_reward(meta, symbol, realized_eq, is_fx=False)
                                 _rate_mark(key)
                                 invalidate_portfolio_cache()
                                 db_update_position(key, 0.0, 0.0, overwrite=True)
@@ -1163,7 +1226,7 @@ def run_live_trading():
 
             # --------------------------- Profit Guard pass ---------------------
             try:
-                _profit_guard_run(all_symbols, latest_outcomes)
+                _profit_guard_run(all_symbols, latest_outcomes, meta=meta)
             except Exception as e:
                 print(f"[PG] skipped this cycle: {e}")
 

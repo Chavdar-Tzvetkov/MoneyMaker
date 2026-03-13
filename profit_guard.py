@@ -1,4 +1,4 @@
-﻿# profit_guard.py
+# profit_guard.py
 import os
 import time
 from typing import Dict, Optional, Tuple
@@ -175,7 +175,7 @@ def run_profit_guard(outcome_map: Optional[Dict[str, str]] = None) -> None:
 
             # --- Close logic ---
             if _is_fx(sym):
-                ok, msg = mt5_close(sym)
+                ok, msg, _ = mt5_close(sym)
                 print(f"[PG] {sym}: close FX {'OK' if ok else 'FAIL'} — {msg} | ur={ur:.4%}, tp_rem={tp_rem}")
                 if ok:
                     closed.append(sym)

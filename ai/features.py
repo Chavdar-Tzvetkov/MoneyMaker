@@ -74,6 +74,21 @@ def compute_features(df: pd.DataFrame) -> np.ndarray:
     else:
         rng = (high - low) / low
 
+    # 4b) ATR regime: current volatility vs recent (high = expansion, low = compression)
+    atr_ratio = 0.0
+    if len(close) >= 20:
+        try:
+            h, l_ = df["High"].astype(float), df["Low"].astype(float)
+            prev_c = close.shift(1)
+            tr = (h - l_).combine((h - prev_c).abs(), max).combine((l_ - prev_c).abs(), max)
+            atr = float(tr.rolling(14).mean().iloc[-1] or 0.0)
+            atr_mean = float(tr.rolling(14).mean().rolling(20).mean().iloc[-1] or 1e-9)
+            if atr_mean > 0:
+                atr_ratio = atr / atr_mean
+            atr_ratio = float(np.clip(atr_ratio, 0.0, 3.0))
+        except Exception:
+            pass
+
     # 5) Assemble feature vector (cast booleans to floats)
     x = np.array([
         ret1,
@@ -85,6 +100,7 @@ def compute_features(df: pd.DataFrame) -> np.ndarray:
         rng,
         float(sma20 > sma50),
         float(abs(delta) < 0.001),
+        atr_ratio,
         1.0,  # bias
     ], dtype=float)
 

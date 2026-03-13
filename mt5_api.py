@@ -19,7 +19,8 @@ load_dotenv()
 
 # Track MT5 deal tickets we've already logged into DailyPnL during this
 # process lifetime. This gives basic protection against double-counting
-# if close handling is retried or invoked from multiple call sites.
+# if close handling is retried or invoked from multiple call sites, or
+# when we also reconcile from history in the live loop.
 _logged_deal_ids: set[int] = set()
 
 # ---------- connection ----------
@@ -180,6 +181,50 @@ def get_account_equity() -> float:
         return 0.0
 
 # ---------- public price/position ----------
+
+def sync_new_mm_deals_to_pnl(window_hours: int = 24) -> None:
+    """
+    Scan recent MT5 deal history for EA-generated closing deals (those with
+    comments starting with 'MM ') and log any *new* realized PnL into
+    DailyPnL. This complements per-position close logging so that:
+      - SL/TP triggered at the broker
+      - manual closes in MT5 for MM-tagged trades
+    are still reflected in the bot's PnL accounting.
+    """
+    try:
+        to_dt = datetime.now()
+        frm = to_dt - timedelta(hours=max(1, int(window_hours)))
+        deals = mt5.history_deals_get(frm, to_dt) or []
+
+        allowed_entries = {
+            getattr(mt5, "DEAL_ENTRY_OUT", None),
+            getattr(mt5, "DEAL_ENTRY_OUT_BY", None),
+            getattr(mt5, "DEAL_ENTRY_INOUT", None),
+        }
+        entry_filter_enabled = any(e is not None for e in allowed_entries)
+
+        for d in deals:
+            comment = (getattr(d, "comment", "") or "").strip()
+            if not comment.startswith("MM "):
+                # Ignore trades not initiated by this bot.
+                continue
+
+            if entry_filter_enabled:
+                entry_val = getattr(d, "entry", None)
+                if entry_val not in allowed_entries:
+                    continue
+
+            deal_ticket = int(getattr(d, "ticket", 0) or 0)
+            if deal_ticket in _logged_deal_ids:
+                continue
+
+            profit = float(getattr(d, "profit", 0.0) or 0.0)
+            if profit != 0.0:
+                record_fx_close_profit(profit)
+            _logged_deal_ids.add(deal_ticket)
+    except Exception:
+        # Never let PnL sync issues break the main trading loop.
+        pass
 def get_current_price(symbol: str) -> Optional[float]:
     sym = normalize_symbol(symbol)
     tick = mt5.symbol_info_tick(sym)
@@ -277,24 +322,24 @@ def place_market_order(symbol: str, quantity: float, tp_pct: float | None = None
             continue
     return False, f"ORDER FAIL [{side}] {sym}: {last_err}"
 
-def close_position_market(symbol: str) -> Tuple[bool, str]:
+def close_position_market(symbol: str) -> Tuple[bool, str, float]:
     sym = normalize_symbol(symbol)
     pos = get_position(sym)
     if not pos:
-        return False, f"No open position to close for {sym}"
+        return False, f"No open position to close for {sym}", 0.0
 
     info = mt5.symbol_info(sym)
     if info is None:
-        return False, f"symbol_info({sym}) returned None"
+        return False, f"symbol_info({sym}) returned None", 0.0
     tick = mt5.symbol_info_tick(sym)
     if not tick:
-        return False, f"No tick for {sym}"
+        return False, f"No tick for {sym}", 0.0
 
     is_buy = (pos["type"] == mt5.POSITION_TYPE_BUY)
     price = tick.bid if is_buy else tick.ask
     side = "SELL" if is_buy else "BUY"
     if not price or price <= 0:
-        return False, f"No close price for {sym}"
+        return False, f"No close price for {sym}", 0.0
 
     fill_sequence = _pick_fill_sequence(info)
     last_err = None
@@ -316,6 +361,7 @@ def close_position_market(symbol: str) -> Tuple[bool, str]:
             last_err = f"close order_send None; last_error={mt5.last_error()}; request={request}"
             continue
         if result.retcode == mt5.TRADE_RETCODE_DONE:
+            realized_total = 0.0
             # --- realized PnL logging via history_deals_get ---
             try:
                 to_dt = datetime.now()
@@ -364,11 +410,11 @@ def close_position_market(symbol: str) -> Tuple[bool, str]:
             except Exception:
                 # PnL logging failures must not break order closing.
                 pass
-            return True, f"CLOSE OK [{side}] {sym}: ticket={result.order}, price={price}, vol={pos['volume']}, fill={fill_mode}"
+            return True, f"CLOSE OK [{side}] {sym}: ticket={result.order}, price={price}, vol={pos['volume']}, fill={fill_mode}", realized_total
         last_err = f"retcode={result.retcode} comment={getattr(result, 'comment', '')} fill={fill_mode}"
         if result.retcode == 10030:
             continue
-    return False, f"CLOSE FAIL [{side}] {sym}: {last_err}"
+    return False, f"CLOSE FAIL [{side}] {sym}: {last_err}", 0.0
 
 def modify_position_sl_tp(symbol: str, sl: Optional[float] = None, tp: Optional[float] = None) -> Tuple[bool, str]:
     sym = normalize_symbol(symbol)

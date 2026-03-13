@@ -1,4 +1,4 @@
-﻿# ai/llm_decider.py
+# ai/llm_decider.py
 from __future__ import annotations
 import os, json
 from typing import Dict, Any, Optional
@@ -6,7 +6,7 @@ import pandas as pd
 
 from openai import OpenAI
 
-_MODEL = os.getenv("LLM_MODEL", "gpt-5")
+_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
 _API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # temperature: only send when exactly 1.0; many models force default=1
