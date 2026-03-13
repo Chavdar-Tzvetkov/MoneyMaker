@@ -1023,7 +1023,7 @@ def run_live_trading():
 
     # Instantiate AI decider
     meta = MetaController(
-        alpha=0.6, d=10,
+        alpha=0.6, d=11,
         min_ucb_margin=float(os.getenv("AI_MIN_UCB_MARGIN", "0.00")),
         ucb_floor=float(os.getenv("AI_UCB_FLOOR", "-1.00")),
         flip_cooldown_sec=int(os.getenv("AI_FLIP_COOLDOWN_SEC", "60")),
