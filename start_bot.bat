@@ -11,7 +11,7 @@ if not exist ".venv\Scripts\python.exe" (
 call ".venv\Scripts\activate"
 
 set "USE_META_DECIDER=0"
-set "LLM_ENABLED=0"
+set "LLM_ENABLED=1"
 
 REM Optional: equity behaviour (or set in .env)
 REM set "EQUITY_MIN_HOLD_MINUTES=15"
