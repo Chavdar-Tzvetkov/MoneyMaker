@@ -4,6 +4,7 @@ from config_forex import (
     MIN_RR, TIME_STOP_MIN, MIN_PROGRESS_R, MAX_CONCURRENT_FOREX, FORCE_FLAT_AT_SESSION_END,
 )
 # --- robust .env loader (handles Windows-1252 smart chars etc.) --------------
+# override=False so start_bot.bat (or shell) env vars win over .env (e.g. LLM_ENABLED=1 in bat)
 from dotenv import load_dotenv, find_dotenv
 def _init_env():
     path = find_dotenv(usecwd=True)
@@ -11,7 +12,7 @@ def _init_env():
         return
     for enc in ("utf-8", "utf-8-sig", "cp1252", "latin1"):
         try:
-            load_dotenv(dotenv_path=path, override=True, encoding=enc)
+            load_dotenv(dotenv_path=path, override=False, encoding=enc)
             return
         except UnicodeDecodeError:
             continue
