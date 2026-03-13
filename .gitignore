@@ -182,3 +182,4 @@ cython_debug/
 
 # exclude report files. 
 .csv
+.zip
