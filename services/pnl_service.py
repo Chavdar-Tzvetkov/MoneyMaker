@@ -2,10 +2,44 @@
 from datetime import date
 from typing import Optional
 
+import pytz
 from sqlalchemy.exc import SQLAlchemyError
 
 from db.db_session import SessionLocal
 from db.models import DailyPnL, TradeLog
+
+
+def _today_user() -> date:
+    """Calendar day in user's base timezone (for consistency with strategy_config)."""
+    try:
+        import config
+        tz = pytz.timezone(getattr(config, "BASE_TIMEZONE", "Europe/Sofia"))
+        from datetime import datetime
+        return datetime.now(tz).date()
+    except Exception:
+        return date.today()
+
+
+def reset_today_pnl() -> bool:
+    """
+    Set today's DailyPnL row to 0. Returns True if a row was updated or created.
+    Use when you want to clear the circuit breaker's "today" loss (e.g. after a bad run or data fix).
+    """
+    s = SessionLocal()
+    try:
+        today = _today_user()
+        row = s.query(DailyPnL).filter(DailyPnL.date == today).first()
+        if row:
+            row.pnl = 0.0
+        else:
+            s.add(DailyPnL(date=today, pnl=0.0))
+        s.commit()
+        return True
+    except SQLAlchemyError:
+        s.rollback()
+        return False
+    finally:
+        s.close()
 
 
 def add_to_daily_pnl(delta: float) -> None:

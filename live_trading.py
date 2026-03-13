@@ -73,7 +73,7 @@ from services.position_service import (
     get_position as db_get_position,
     upsert_position as db_update_position,
 )
-from services.pnl_service import add_to_daily_pnl, record_equity_close
+from services.pnl_service import add_to_daily_pnl, record_equity_close, reset_today_pnl
 
 from config import (
     INSTRUMENTS,
@@ -1030,6 +1030,14 @@ def run_live_trading():
             pass
     except Exception as e:
         print(f"[T212] Skipping account info due to error: {e}")
+
+    # Optional: zero today's PnL in DB once so circuit breaker doesn't trip on stale data (set RESET_DAILY_PNL_ON_START=1 in .env)
+    if os.getenv("RESET_DAILY_PNL_ON_START", "0").strip().lower() in ("1", "true", "yes"):
+        try:
+            if reset_today_pnl():
+                print("[PnL] Today's DailyPnL reset to 0 (RESET_DAILY_PNL_ON_START=1). Set to 0 after this run if you don't want it every start.")
+        except Exception as e:
+            print(f"[PnL] Reset today PnL failed: {e}")
 
     # Instantiate AI decider
     meta = MetaController(
