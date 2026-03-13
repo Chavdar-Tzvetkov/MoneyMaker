@@ -20,15 +20,24 @@ class LinUCBArm:
         A_inv = np.linalg.inv(self.A)
         return A_inv @ self.b
 
+    def _x_to_dim(self, x: np.ndarray) -> np.ndarray:
+        """Ensure x has exactly self.d elements (truncate or zero-pad)."""
+        x = np.asarray(x, dtype=float).ravel()
+        if x.size >= self.d:
+            return x[: self.d].reshape(-1, 1)
+        out = np.zeros((self.d, 1), dtype=float)
+        out[: x.size, 0] = x
+        return out
+
     def ucb(self, x: np.ndarray) -> float:
-        x = x.reshape(-1, 1)
+        x = self._x_to_dim(x)
         A_inv = np.linalg.inv(self.A)
-        mean = float((self.theta().T @ x)[0,0])
-        bonus = self.alpha * float(np.sqrt(x.T @ A_inv @ x)[0,0])
+        mean = float((self.theta().T @ x)[0, 0])
+        bonus = self.alpha * float(np.sqrt(x.T @ A_inv @ x)[0, 0])
         return mean + bonus
 
     def update(self, x: np.ndarray, reward: float) -> None:
-        x = x.reshape(-1, 1)
+        x = self._x_to_dim(x)
         self.A += x @ x.T
         self.b += reward * x
 

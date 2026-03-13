@@ -111,20 +111,20 @@ class MetaController:
             for name, arm in policy.arms.items():
                 A_key = f"A__{name}"
                 B_key = f"b__{name}"
-                if A_key in data and B_key in data:
-                    A, b = data[A_key], data[B_key]
-                    if A.shape[0] == d_target and b.shape[0] == d_target:
-                        arm.A = A
-                        arm.b = b
-                    elif A.shape[0] == d_target - 1 and d_target == 11:
-                        # Migrate 10-dim state to 11-dim (pad with identity / zeros)
-                        arm.A = np.eye(d_target, dtype=float)
-                        arm.A[:10, :10] = A
-                        arm.b = np.zeros((d_target, 1), dtype=float)
-                        arm.b[:10] = b
-                    else:
-                        arm.A = A
-                        arm.b = b
+                if A_key not in data or B_key not in data:
+                    continue
+                A, b = np.asarray(data[A_key]), np.asarray(data[B_key])
+                b = b.ravel() if b.ndim > 1 else b
+                if A.shape[0] == d_target and A.shape[1] == d_target and len(b) == d_target:
+                    arm.A = A.copy()
+                    arm.b = b.reshape(d_target, 1).astype(float)
+                elif A.shape[0] == 10 and A.shape[1] == 10 and d_target == 11 and len(b) == 10:
+                    # Migrate 10-dim state to 11-dim (pad with identity / zeros)
+                    arm.A = np.eye(d_target, dtype=float)
+                    arm.A[:10, :10] = A
+                    arm.b = np.zeros((d_target, 1), dtype=float)
+                    arm.b[:10, 0] = b.ravel()[:10]
+                # else: leave arm as fresh 11-dim from _new_policy()
             # print(f"[AI] Loaded LinUCB state for {key} from {path}")
         except Exception as e:
             print(f"[AI] Failed to load LinUCB state for {key}: {e}")
