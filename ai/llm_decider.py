@@ -27,7 +27,7 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "decision": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
-        "strategy": {"type": "string", "enum": ["SMA", "SCALPING", "RSI_MR", "DONCHIAN", "SUPER", "MACD", "RANGE_MR", "HOLD"]},
+        "strategy": {"type": "string", "enum": ["SMA", "SCALPING", "RSI_MR", "DONCHIAN", "SUPER", "MACD", "RANGE_MR", "BOLLINGER", "EMA_CROSS", "BREAKOUT", "ZSCORE", "HOLD"]},
         "params":   {"type": "object"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}
     },

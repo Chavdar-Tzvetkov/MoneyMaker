@@ -18,12 +18,14 @@ ACTIONS = {
     "MACD_Trend":       ("MACD", {"interval": "15m"}),
     "Supertrend":       ("SUPER", {"interval": "15m", "atr_len": 10, "mult": 3.0}),
     "RangeMR":          ("RANGE_MR", {"interval": "1m", "length": 60, "z_entry": 1.2}),
-
-    # --- NEW: make scalping selectable by the AI ---
-    # analyze_scalping() is parameterless in your implementation; we still expose the arm explicitly.
     "Scalping":         ("SCALP", {}),
 
-    # HOLD
+    # --- New: work on both MT5 and T212 ---
+    "Bollinger":        ("BOLLINGER", {"interval": "15m", "window": 20, "num_std": 2.0}),
+    "EMA_Cross":        ("EMA_CROSS", {"interval": "15m", "fast": 9, "slow": 21}),
+    "Breakout":         ("BREAKOUT", {"interval": "15m", "n_days": 20, "min_range_pct": 0.002}),
+    "ZScore_MR":        ("ZSCORE", {"interval": "15m", "length": 50, "entry_z": 2.0}),
+
     "Hold":             ("HOLD", {}),
 }
 

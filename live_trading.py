@@ -42,6 +42,10 @@ from strategies.donchian_breakout import analyze_donchian_breakout
 from strategies.supertrend_trend import analyze_supertrend
 from strategies.macd_trend import analyze_macd
 from strategies.range_band_mr import analyze_range_mr
+from strategies.bollinger_strategy import analyze_bollinger
+from strategies.ema_crossover import analyze_ema_crossover
+from strategies.breakout_strategy import analyze_breakout
+from strategies.zscore_mean_reversion import analyze_zscore
 
 from mt5_api import (
     get_current_price as mt5_get_price,
@@ -236,6 +240,44 @@ def _run_range_mr(symbol: str, params: dict):
         max_bw=float(params.get("max_bw", 0.0040)),
     )
 
+def _run_bollinger(symbol: str, params: dict) -> Optional[str]:
+    return analyze_bollinger(
+        symbol,
+        lookback=params.get("lookback", "20d"),
+        interval=params.get("interval", "15m"),
+        window=int(params.get("window", 20)),
+        num_std=float(params.get("num_std", 2.0)),
+        buffer_pct=float(params.get("buffer_pct", 0.001)),
+    )
+
+def _run_ema_crossover(symbol: str, params: dict) -> Optional[str]:
+    return analyze_ema_crossover(
+        symbol,
+        lookback=params.get("lookback", "20d"),
+        interval=params.get("interval", "15m"),
+        fast=int(params.get("fast", 9)),
+        slow=int(params.get("slow", 21)),
+        require_price_side=params.get("require_price_side", True),
+    )
+
+def _run_breakout(symbol: str, params: dict) -> Optional[str]:
+    return analyze_breakout(
+        symbol,
+        lookback=params.get("lookback", "30d"),
+        interval=params.get("interval", "15m"),
+        n_days=int(params.get("n_days", 20)),
+        min_range_pct=float(params.get("min_range_pct", 0.002)),
+    )
+
+def _run_zscore(symbol: str, params: dict) -> Optional[str]:
+    return analyze_zscore(
+        symbol,
+        lookback=params.get("lookback", "15d"),
+        interval=params.get("interval", "15m"),
+        length=int(params.get("length", 50)),
+        entry_z=float(params.get("entry_z", 2.0)),
+    )
+
 STRATEGY_RUNNERS: Dict[str, Callable[[str, Dict[str, Any]], Optional[str]]] = {
     "SMA":       lambda s, p: analyze_sma(s),
     "SCALPING":  lambda s, p: analyze_scalping(s),
@@ -245,6 +287,10 @@ STRATEGY_RUNNERS: Dict[str, Callable[[str, Dict[str, Any]], Optional[str]]] = {
     "SUPER":     _run_supertrend,
     "MACD":      _run_macd,
     "RANGE_MR":  _run_range_mr,
+    "BOLLINGER": _run_bollinger,
+    "EMA_CROSS": _run_ema_crossover,
+    "BREAKOUT":  _run_breakout,
+    "ZSCORE":    _run_zscore,
     "HOLD":      lambda _s, _p: "HOLD",
 }
 
