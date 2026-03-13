@@ -1064,8 +1064,15 @@ def run_live_trading():
                 except Exception as rec_err:
                     print(f"[RECON ERROR] {symbol}: {rec_err}")
 
-            # Strategy switcher
-            switch_strategy_if_needed()
+            # Strategy switcher (pass reference equity so circuit breaker uses daily PnL as fraction)
+            try:
+                ref_equity = mt5_get_equity()
+                if ref_equity is None or ref_equity <= 0:
+                    info = get_account_info() or {}
+                    ref_equity = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 5000.0)
+            except Exception:
+                ref_equity = 5000.0
+            switch_strategy_if_needed(equity=ref_equity)
 
             # --------------------------- Trading pass --------------------------
             latest_outcomes: Dict[str, str] = {}

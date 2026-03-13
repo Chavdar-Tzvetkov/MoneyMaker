@@ -6,7 +6,7 @@ import pandas as pd
 
 from openai import OpenAI
 
-_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+_MODEL = os.getenv("LLM_MODEL", "gpt-5.4")
 _API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # temperature: only send when exactly 1.0; many models force default=1
