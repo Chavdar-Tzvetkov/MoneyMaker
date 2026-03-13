@@ -1064,12 +1064,19 @@ def run_live_trading():
                 except Exception as rec_err:
                     print(f"[RECON ERROR] {symbol}: {rec_err}")
 
-            # Strategy switcher (pass reference equity so circuit breaker uses daily PnL as fraction)
+            # Strategy switcher: use combined MT5 + T212 equity so circuit breaker reflects total capital
             try:
-                ref_equity = mt5_get_equity()
-                if ref_equity is None or ref_equity <= 0:
+                mt5_eq = mt5_get_equity()
+                mt5_eq = float(mt5_eq or 0.0) if mt5_eq is not None else 0.0
+                t212_eq = 0.0
+                try:
                     info = get_account_info() or {}
-                    ref_equity = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 5000.0)
+                    t212_eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 0.0)
+                except Exception:
+                    pass
+                ref_equity = mt5_eq + t212_eq
+                if ref_equity <= 0:
+                    ref_equity = 5000.0
             except Exception:
                 ref_equity = 5000.0
             switch_strategy_if_needed(equity=ref_equity)
