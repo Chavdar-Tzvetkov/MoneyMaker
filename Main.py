@@ -1,4 +1,4 @@
-﻿# main.py
+# main.py
 import argparse
 import os
 import sys
@@ -70,10 +70,17 @@ if __name__ == "__main__":
             shutdown_mt5()
 
     elif args.live:
-        # Classic live trading (AI decider OFF)
+        # Live trading; mode label reflects env (bat may set USE_META_DECIDER / LLM_ENABLED)
         os.environ.setdefault("USE_META_DECIDER", "0")
         config.LIVE_TRADING = True
-        print("[Mode] LIVE trading mode (classic).")
+        use_meta = os.getenv("USE_META_DECIDER", "0") == "1"
+        use_llm = os.getenv("LLM_ENABLED", "0") == "1"
+        if use_meta and use_llm:
+            print("[Mode] LIVE trading mode (AI + LLM).")
+        elif use_meta:
+            print("[Mode] LIVE trading mode (AI decider ON).")
+        else:
+            print("[Mode] LIVE trading mode (classic).")
         _print_env_summary()
         initialize_mt5()
         try:
