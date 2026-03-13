@@ -31,6 +31,9 @@ REM Live mode: AI + LLM. Override in .env or here for classic (USE_META_DECIDER=
 set "USE_META_DECIDER=1"
 set "LLM_ENABLED=1"
 
+REM Optional: set in .env to avoid 429 and fix circuit breaker to your budgets (e.g. REFERENCE_EQUITY_MT5=9500 REFERENCE_EQUITY_T212=4200)
+REM Optional: clear circuit breaker on start once (CLEAR_HALT_ON_START=1) or relax threshold (CIRCUIT_BREAKER_HALT_THRESHOLD=-0.35)
+
 echo [START] Running MoneyMaker (LIVE)...
 python Main.py --live
 pause

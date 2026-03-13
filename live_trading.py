@@ -1074,13 +1074,13 @@ def run_live_trading():
                 except Exception as rec_err:
                     print(f"[RECON ERROR] {symbol}: {rec_err}")
 
-            # Strategy switcher: combined MT5 + T212 equity (per-platform budgets; optional fixed ref from config)
+            # Strategy switcher: combined MT5 + T212 (use fixed ref from config to avoid 429 and match your budgets)
             try:
-                mt5_eq = float(REFERENCE_EQUITY_MT5 or 0.0) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else None
+                mt5_eq = float(REFERENCE_EQUITY_MT5) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else None
                 if mt5_eq is None:
                     e = mt5_get_equity()
                     mt5_eq = float(e or 0.0) if e is not None else 0.0
-                t212_eq = float(REFERENCE_EQUITY_T212 or 0.0) if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0 else None
+                t212_eq = float(REFERENCE_EQUITY_T212) if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0 else None
                 if t212_eq is None:
                     try:
                         info = get_account_info() or {}

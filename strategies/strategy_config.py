@@ -21,8 +21,9 @@ ACTIVE_STRATEGY = "SMA"  # or "SCALPING"
 DAILY_LOSS_LIMIT = -0.15
 
 # Hard circuit breaker: if daily PnL (as fraction of equity) <= HALT_THRESHOLD, pause for HALT_MINUTES.
-HALT_THRESHOLD = -0.20
-HALT_MINUTES = 60  # pause for 60 minutes when breaker trips
+# Override in .env (e.g. CIRCUIT_BREAKER_HALT_THRESHOLD=-0.35 to only halt at -35%).
+HALT_THRESHOLD = float(os.getenv("CIRCUIT_BREAKER_HALT_THRESHOLD", "-0.20"))
+HALT_MINUTES = int(os.getenv("CIRCUIT_BREAKER_HALT_MINUTES", "60"))
 
 # Circuit breaker can be disabled (e.g. for testing). When disabled, is_trading_halted() is always False.
 CIRCUIT_BREAKER_ENABLED = os.getenv("CIRCUIT_BREAKER_ENABLED", "1").strip().lower() in ("1", "true", "yes")
@@ -150,6 +151,8 @@ def switch_strategy_if_needed(equity: Optional[float] = None) -> str:
     # 1) Circuit breaker (only when we have valid fraction and breaker enabled)
     if CIRCUIT_BREAKER_ENABLED and equity and float(equity) > 0 and pnl <= HALT_THRESHOLD:
         if not is_trading_halted():
+            pct = pnl * 100.0
+            print(f"[Strategy][HALT] Daily PnL {pnl_abs:.2f} USD = {pct:.1f}% of equity {float(equity):.0f} → halting {HALT_MINUTES} min")
             _trip_halt(HALT_MINUTES)
         return ACTIVE_STRATEGY
     else:
