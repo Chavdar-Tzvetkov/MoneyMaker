@@ -1002,22 +1002,22 @@ def run_live_trading():
     print(f"[LLM-KNOBS] enabled={int(LLM_ENABLED)} mode={LLM_MODE} min_conf={LLM_MIN_CONF}")
     print("==================================================\n")
 
-    # One-time T212 probe & reconciliation
+    # One-time T212 probe & reconciliation (single portfolio fetch to avoid 429 at startup)
     try:
         acct = get_account_info()
         print("[T212] Account OK" if acct else "[T212] Account info not available.")
         try:
             updated, skipped = reconcile_t212_portfolio_to_db(force_refresh=True)
             print(f"[T212 RECON] DB updated for {updated} equity symbols (skipped {skipped}).")
+            pos = list_open_positions() or []  # use cache from reconcile, no extra GET
+            tickers = [f"{p.get('ticker')}={p.get('quantity')}" for p in pos]
+            print(f"[T212 RAW] {len(pos)} items → " + ", ".join(tickers))
         except Exception as e:
             print(f"[T212 RECON] Failed: {e}")
         try:
             debug_dump_portfolio_map()
-            pos = list_open_positions() or []
-            tickers = [f"{p.get('ticker')}={p.get('quantity')}" for p in pos]
-            print(f"[T212 RAW] {len(pos)} items → " + ", ".join(tickers))
         except Exception as e:
-            print(f"[T212 RAW] failed to fetch: {e}")
+            pass
     except Exception as e:
         print(f"[T212] Skipping account info due to error: {e}")
 

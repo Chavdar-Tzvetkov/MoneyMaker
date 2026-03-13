@@ -25,12 +25,13 @@ API_KEY_RAW = os.getenv("TRADING212_API_KEY") or ""
 API_KEY = API_KEY_RAW.replace("Bearer ", "").strip()
 BASE_URL = (os.getenv("BASE_URL") or "").rstrip("/")  # e.g. https://demo.trading212.com
 
-# Portfolio polling / cache TTL (seconds)
-_PORTFOLIO_TTL = float(os.getenv("T212_PORTFOLIO_TTL", "6"))
+# Portfolio polling: avoid 429 by not refetching too often (T212 Demo is strict)
+_PORTFOLIO_TTL = float(os.getenv("T212_PORTFOLIO_TTL", "45"))   # use cache for 45s unless force
+_PORTFOLIO_MIN_INTERVAL = float(os.getenv("T212_PORTFOLIO_MIN_INTERVAL_SEC", "30"))  # never GET more than once per 30s (unless force)
 
-# Global backoff controls for /equity/portfolio (seconds)
-_BACKOFF_INIT = float(os.getenv("T212_BACKOFF_INIT_SEC", "1.7"))
-_BACKOFF_MAX  = float(os.getenv("T212_BACKOFF_MAX_SEC",  "18"))
+# Global backoff controls for /equity/portfolio on 429 (seconds)
+_BACKOFF_INIT = float(os.getenv("T212_BACKOFF_INIT_SEC", "3.0"))
+_BACKOFF_MAX  = float(os.getenv("T212_BACKOFF_MAX_SEC",  "45"))
 
 # Turn on extra logs by setting T212_DEBUG=1
 T212_DEBUG = os.getenv("T212_DEBUG", "0") == "1"
@@ -62,6 +63,7 @@ _PORTFOLIO_CACHE: List[Dict[str, Any]] = []
 # Global backoff state for /equity/portfolio
 _BACKOFF_UNTIL = 0.0
 _BACKOFF_CURR = _BACKOFF_INIT
+_LAST_PORTFOLIO_FETCH_TS = 0.0  # last time we actually sent a GET (for min interval)
 
 # manual overrides for tricky dual-class / aliases
 _TICKER_OVERRIDES = {
@@ -244,14 +246,19 @@ def list_open_positions(force: bool = False) -> Optional[List[Dict[str, Any]]]:
     Fetch all open T212 equity positions (cached with global backoff).
     Each item usually includes: ticker, quantity, averagePrice/currentPrice, etc.
     During a 429 backoff window we serve the last cached snapshot without re-hitting the API.
+    Respects T212_PORTFOLIO_TTL and T212_PORTFOLIO_MIN_INTERVAL to avoid 429s.
     """
-    global _PORTFOLIO_CACHE, _PORTFOLIO_CACHE_TS, _BACKOFF_UNTIL, _BACKOFF_CURR
+    global _PORTFOLIO_CACHE, _PORTFOLIO_CACHE_TS, _BACKOFF_UNTIL, _BACKOFF_CURR, _LAST_PORTFOLIO_FETCH_TS
 
     now = time.time()
 
     # Serve from cache if TTL not expired and not forced
     if _PORTFOLIO_CACHE and not force and (now - _PORTFOLIO_CACHE_TS) < _PORTFOLIO_TTL:
         return _PORTFOLIO_CACHE
+
+    # Even if TTL expired: don't refetch more often than MIN_INTERVAL (unless force)
+    if not force and (now - _LAST_PORTFOLIO_FETCH_TS) < _PORTFOLIO_MIN_INTERVAL:
+        return _PORTFOLIO_CACHE if _PORTFOLIO_CACHE else None
 
     # If we're in a backoff window, return stale cache (if any) and don't fetch
     if now < _BACKOFF_UNTIL:
@@ -287,6 +294,7 @@ def list_open_positions(force: bool = False) -> Optional[List[Dict[str, Any]]]:
         if isinstance(data, list):
             _PORTFOLIO_CACHE = data
             _PORTFOLIO_CACHE_TS = now
+            _LAST_PORTFOLIO_FETCH_TS = now
             _BACKOFF_CURR = _BACKOFF_INIT  # reset backoff on success
 
             # --- DEBUG: show exactly what T212 returned (first 12) ---
