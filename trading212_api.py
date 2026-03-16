@@ -369,10 +369,13 @@ def place_market_order(symbol: str, quantity: float) -> bool:
         print(f"[T212] Could not resolve ticker for {symbol}.")
         return False
 
+    # Trading212 imposes per-instrument quantity precision (Demo often rejects >2 decimals).
+    # To avoid quantity-precision-mismatch, round to 2 decimals by default.
     url = f"{BASE_URL}/api/v0/equity/orders/market"
+    safe_qty = round(float(quantity), 2)
     payload = {
         "ticker": ticker,
-        "quantity": float(quantity),
+        "quantity": safe_qty,
     }
 
     data = _safe_request("POST", url, json=payload)
