@@ -58,10 +58,11 @@ STOP_LOSS_PERCENT   = -0.0015   # −0.15% SL
 
 # Account-level risk controls (fractions of current equity)
 # These are *targets* used by the live loop to size positions.
-FX_RISK_PER_TRADE_FRAC   = float(os.getenv("FX_RISK_PER_TRADE_FRAC", "0.003"))   # 0.3% per FX trade
-EQ_RISK_PER_TRADE_FRAC   = float(os.getenv("EQ_RISK_PER_TRADE_FRAC", "0.005"))   # 0.5% per equity trade
-FX_MAX_DAILY_LOSS_FRAC   = float(os.getenv("FX_MAX_DAILY_LOSS_FRAC", "0.020"))   # 2% max daily FX loss
-EQ_MAX_DAILY_LOSS_FRAC   = float(os.getenv("EQ_MAX_DAILY_LOSS_FRAC", "0.015"))   # 1.5% max daily equity loss
+# Defaults are tuned for *conservative* behaviour; override in .env if desired.
+FX_RISK_PER_TRADE_FRAC   = float(os.getenv("FX_RISK_PER_TRADE_FRAC", "0.001"))   # 0.1% per FX trade (was 0.3%)
+EQ_RISK_PER_TRADE_FRAC   = float(os.getenv("EQ_RISK_PER_TRADE_FRAC", "0.003"))   # 0.3% per equity trade (was 0.5%)
+FX_MAX_DAILY_LOSS_FRAC   = float(os.getenv("FX_MAX_DAILY_LOSS_FRAC", "0.010"))   # 1% max daily FX loss (was 2%)
+EQ_MAX_DAILY_LOSS_FRAC   = float(os.getenv("EQ_MAX_DAILY_LOSS_FRAC", "0.010"))   # 1% max daily equity loss (was 1.5%)
 
 # ----- Equity software stops & trailing (managed by the bot on T212) -----
 EQUITY_STOPS_ENABLED             = True     # master enable for software stops on stocks
@@ -98,8 +99,10 @@ REGIME = {
 
 # ----- Profit-oriented behaviour (profitability cannot be guaranteed; these bias toward better R:R and learning) -----
 PROFIT = {
-    "MIN_RISK_REWARD_RATIO": float(os.getenv("MIN_RISK_REWARD_RATIO", "0.0")),   # 0 = off; e.g. 1.5 = require TP/SL ratio >= 1.5 before opening
-    "REWARD_PROFIT_BIAS": float(os.getenv("REWARD_PROFIT_BIAS", "1.0")),         # scale positive rewards (e.g. 1.2 = 20% bonus for wins)
+    # Require at least 1.5:1 configured TP/SL ratio before opening (set 0.0 in .env to disable)
+    "MIN_RISK_REWARD_RATIO": float(os.getenv("MIN_RISK_REWARD_RATIO", "1.5")),
+    # Mildly reward profitable strategies more when learning from PnL
+    "REWARD_PROFIT_BIAS": float(os.getenv("REWARD_PROFIT_BIAS", "1.2")),  # 20% bonus for wins by default
 }
 
 
@@ -112,8 +115,8 @@ RATE_LIMIT = {
 
 # ----- Spike Fade (mean-reversion on outsized 1-bar moves) -----
 # When ENABLED and the last bar is a large spike, the bot flips a BUY->SELL or SELL->BUY
-# before sending the order. Safe defaults: disabled.
-SPIKE_FADE_ENABLED        = True   # master switch
+# before sending the order. Default: disabled for stability; enable via env if desired.
+SPIKE_FADE_ENABLED        = bool(int(os.getenv("SPIKE_FADE_ENABLED", "0")))   # master switch (was True)
 SPIKE_FADE_ATR_MULT       = 1.5     # require |last_return| >= ATR% * this
 SPIKE_FADE_MIN_RET_PCT    = 0.0030  # AND also >= 0.30% absolute 1-bar return
 SPIKE_FADE_COOLDOWN_SEC   = 120     # don't flip again for this symbol within N sec
