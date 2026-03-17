@@ -99,8 +99,9 @@ REGIME = {
 
 # ----- Profit-oriented behaviour (profitability cannot be guaranteed; these bias toward better R:R and learning) -----
 PROFIT = {
-    # Require at least 1.5:1 configured TP/SL ratio before opening (set 0.0 in .env to disable)
-    "MIN_RISK_REWARD_RATIO": float(os.getenv("MIN_RISK_REWARD_RATIO", "1.5")),
+    # Require at least ~1:1 configured TP/SL ratio before opening by default.
+    # Set higher (e.g. 1.5) in .env if you want stricter filters.
+    "MIN_RISK_REWARD_RATIO": float(os.getenv("MIN_RISK_REWARD_RATIO", "1.0")),
     # Mildly reward profitable strategies more when learning from PnL
     "REWARD_PROFIT_BIAS": float(os.getenv("REWARD_PROFIT_BIAS", "1.2")),  # 20% bonus for wins by default
 }

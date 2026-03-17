@@ -11,8 +11,8 @@ FOREX_BLOCKED_SYMBOLS = []
 USE_BROKER_SESSIONS = False
 
 # Risk/Reward enforcement
-# Slightly stricter by default; override via .env only if you really want more trades.
-MIN_RR = 1.3        # min required Reward:Risk at placement (tp_pct/sl_pct)
+# Reasonable default; override via .env if you want stricter filters.
+MIN_RR = 1.1        # min required Reward:Risk at placement (tp_pct/sl_pct)
 
 # Time-based exit if trade not progressing
 TIME_STOP_MIN = 60   # minutes (exit sooner if trade stalls)
