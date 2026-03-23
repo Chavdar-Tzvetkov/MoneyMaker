@@ -2,6 +2,7 @@ from __future__ import annotations
 from config_forex import (
     FOREX_ALLOWED_SYMBOLS, FOREX_BLOCKED_SYMBOLS, USE_BROKER_SESSIONS,
     MIN_RR, TIME_STOP_MIN, MIN_PROGRESS_R, MAX_CONCURRENT_FOREX, FORCE_FLAT_AT_SESSION_END,
+    FOREX_REDUCED_RISK_SYMBOLS, FOREX_REDUCED_RISK_MULT,
 )
 # --- robust .env loader (handles Windows-1252 smart chars etc.) --------------
 # override=False so start_bot.bat (or shell) env vars win over .env (e.g. LLM_ENABLED=1 in bat)
@@ -84,6 +85,7 @@ from config import (
     STOP_LOSS_PERCENT,
     FX_RISK_PER_TRADE_FRAC,
     EQ_RISK_PER_TRADE_FRAC,
+    MAX_FX_LOTS_PER_ORDER,
     REFERENCE_EQUITY_MT5,
     REFERENCE_EQUITY_T212,
     BASE_TIMEZONE,
@@ -136,7 +138,8 @@ AI_BAR_INTERVAL = os.getenv("AI_BAR_INTERVAL", "5m")
 # =============================================================================
 # Hedge settings (FX only)
 # =============================================================================
-HEDGE_ENABLED = bool(int(os.getenv("HEDGE_ENABLED", "1")))
+# Default off: hedges add margin load and amplified losses when wrong; enable via HEDGE_ENABLED=1 if needed.
+HEDGE_ENABLED = bool(int(os.getenv("HEDGE_ENABLED", "0")))
 HEDGE_RATIO = float(os.getenv("HEDGE_RATIO", "0.5"))
 HEDGE_TP_PCT = float(os.getenv("HEDGE_TP_PCT", "0.004"))
 HEDGE_SL_PCT = float(os.getenv("HEDGE_SL_PCT", "0.004"))
@@ -971,14 +974,22 @@ def _compute_risk_based_quantity(symbol: str, price: float) -> float:
         if eq <= 0.0 or sl_frac <= 0.0:
             return base_qty or 0.1
         risk_per_trade = eq * float(FX_RISK_PER_TRADE_FRAC or 0.0)
+        if symbol in (FOREX_REDUCED_RISK_SYMBOLS or []):
+            risk_per_trade *= float(FOREX_REDUCED_RISK_MULT or 1.0)
         if risk_per_trade <= 0.0:
             return base_qty or 0.1
         per_lot_risk_est = price * sl_frac
         if per_lot_risk_est <= 0.0:
             return base_qty or 0.1
         lots = risk_per_trade / per_lot_risk_est
-        # Keep within a sane range; the MT5 API will cap by margin as well.
-        return max(0.01, min(lots, 5.0))
+        cap = float(MAX_FX_LOTS_PER_ORDER or 0.0)
+        if cap <= 0:
+            cap = 0.35
+        # Hard cap per order + floor; MT5 API also caps by margin and applies same MAX_FX_LOTS cap.
+        out = max(0.01, min(lots, cap))
+        if lots > cap + 1e-6:
+            print(f"[RISK] {symbol}: requested lots {lots:.3f} capped to {out:.3f} (MAX_FX_LOTS_PER_ORDER)")
+        return out
 
     # Equity sizing: risk = equity * EQ_RISK_PER_TRADE_FRAC (T212 budget; use REFERENCE_EQUITY_T212 if set)
     # per-share risk ≈ price * |EQUITY_STOP_LOSS_PERCENT|

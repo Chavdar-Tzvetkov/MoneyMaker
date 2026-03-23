@@ -37,8 +37,8 @@ LIVE_TRADING = False
 
 # ----- Trade management (both asset classes) -----
 MAX_POSITIONS_PER_SYMBOL = 1          # no stacking for base entries
-REENTRY_COOLDOWN_SEC = 20             # FX: seconds before same symbol can be re-entered
-REENTRY_DELTA_PCT = 0.0015            # FX: min price move (fraction) to allow re-entry
+REENTRY_COOLDOWN_SEC = int(os.getenv("REENTRY_COOLDOWN_SEC", "120"))       # FX: reduce churn (was 20s)
+REENTRY_DELTA_PCT = float(os.getenv("REENTRY_DELTA_PCT", "0.0025"))        # FX: need larger move to re-enter
 # Equity-specific (stocks trade less frequently, hold longer)
 REENTRY_COOLDOWN_SEC_EQUITY = int(os.getenv("REENTRY_COOLDOWN_SEC_EQUITY", "300"))   # 5 min
 REENTRY_DELTA_PCT_EQUITY = float(os.getenv("REENTRY_DELTA_PCT_EQUITY", "0.005"))     # 0.5%
@@ -53,16 +53,20 @@ BREAKEVEN_AFTER_PCT         = 0.0015   # move SL to entry at +0.15%
 
 # ----- Risk management (fractions, not percents) -----
 # Broker-side TP/SL for FX only (MT5). Equities use software stops.
-TAKE_PROFIT_PERCENT = 0.0017    # +0.17% TP
-STOP_LOSS_PERCENT   = -0.0015   # −0.15% SL
+# Slightly wider TP vs SL → better R:R when MIN_RR / pretrade filters apply.
+TAKE_PROFIT_PERCENT = float(os.getenv("TAKE_PROFIT_PERCENT", "0.0020"))   # +0.20% TP default
+STOP_LOSS_PERCENT   = float(os.getenv("STOP_LOSS_PERCENT", "-0.0015"))    # −0.15% SL default
 
 # Account-level risk controls (fractions of current equity)
 # These are *targets* used by the live loop to size positions.
-# Defaults are tuned for *conservative* behaviour; override in .env if desired.
-FX_RISK_PER_TRADE_FRAC   = float(os.getenv("FX_RISK_PER_TRADE_FRAC", "0.001"))   # 0.1% per FX trade (was 0.3%)
-EQ_RISK_PER_TRADE_FRAC   = float(os.getenv("EQ_RISK_PER_TRADE_FRAC", "0.003"))   # 0.3% per equity trade (was 0.5%)
-FX_MAX_DAILY_LOSS_FRAC   = float(os.getenv("FX_MAX_DAILY_LOSS_FRAC", "0.010"))   # 1% max daily FX loss (was 2%)
-EQ_MAX_DAILY_LOSS_FRAC   = float(os.getenv("EQ_MAX_DAILY_LOSS_FRAC", "0.010"))   # 1% max daily equity loss (was 1.5%)
+# Defaults tuned for capital preservation after large demo drawdowns; override in .env.
+FX_RISK_PER_TRADE_FRAC   = float(os.getenv("FX_RISK_PER_TRADE_FRAC", "0.0005"))   # 0.05% equity risk per FX trade
+EQ_RISK_PER_TRADE_FRAC   = float(os.getenv("EQ_RISK_PER_TRADE_FRAC", "0.002"))    # 0.2% per equity trade
+FX_MAX_DAILY_LOSS_FRAC   = float(os.getenv("FX_MAX_DAILY_LOSS_FRAC", "0.005"))    # 0.5% max daily FX loss → halt
+EQ_MAX_DAILY_LOSS_FRAC   = float(os.getenv("EQ_MAX_DAILY_LOSS_FRAC", "0.0075"))   # 0.75% max daily equity loss
+
+# Hard cap on MT5 lot size per order (also enforced in mt5_api). Stops 2+ lot disasters.
+MAX_FX_LOTS_PER_ORDER    = float(os.getenv("MAX_FX_LOTS_PER_ORDER", "0.35"))
 
 # ----- Equity software stops & trailing (managed by the bot on T212) -----
 EQUITY_STOPS_ENABLED             = True     # master enable for software stops on stocks
@@ -76,7 +80,7 @@ EQUITY_BREAKEVEN_AFTER_PCT       = 0.0060   # start trailing after +0.6% in prof
 # Default order size:
 # - FX (MT5): lots (e.g., 0.2 lot)
 # - Stocks (T212): fractional shares (e.g., 0.2 share)
-TRADE_QUANTITY = 0.2
+TRADE_QUANTITY = float(os.getenv("TRADE_QUANTITY", "0.05"))  # fallback when risk sizing unavailable (FX)
 
 # ----- AI meta-controller: real-time automated strategy switching (no human interaction) -----
 # USE_META_DECIDER=1: LinUCB selects strategy per symbol each bar from market behaviour (SMA, RSI_MR, DONCHIAN, MACD, etc.).
@@ -126,7 +130,7 @@ SPIKE_FADE_COOLDOWN_SEC   = 120     # don't flip again for this symbol within N 
 # NOTE: live_trading.py currently reads HEDGE_* from ENV, not from this dict.
 # If you prefer ENV, set: HEDGE_ENABLED=1, HEDGE_RATIO=0.5, HEDGE_TP_PCT=0.002, HEDGE_SL_PCT=0.005, HEDGE_COOLDOWN_SEC=120
 HEDGE = {
-    "ENABLED": True,
+    "ENABLED": False,  # live_trading reads HEDGE_* from .env; default off in code
     "RATIO": 0.50,       # hedge 50% of the opposing leg
     "TP_PCT": 0.0020,    # 0.20% TP for hedge (take quick cover profits)
     "SL_PCT": 0.0050,    # 0.50% SL for hedge (wider, it's insurance)

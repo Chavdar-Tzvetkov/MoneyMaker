@@ -120,6 +120,9 @@ For more detail (features, reward flow, tuning), see **`ai/README_AI_LEARNING.md
 **Risk / rate**  
 `FX_RISK_PER_TRADE_FRAC`, `EQ_RISK_PER_TRADE_FRAC`, `FX_MAX_DAILY_LOSS_FRAC`, `EQ_MAX_DAILY_LOSS_FRAC`, `MAX_TRADES_PER_HOUR`, `EQUITY_MAX_TRADES_PER_HOUR`
 
+**Capital preservation (FX drawdown protection)**  
+Defaults aim to limit wipe-outs: **`MAX_FX_LOTS_PER_ORDER`** (hard cap per MT5 order, e.g. `0.35`), **`MAX_CONCURRENT_FOREX`** (max open FX positions), **`FOREX_REDUCED_RISK_SYMBOLS`** / **`FOREX_REDUCED_RISK_MULT`** (half-size on choppy pairs like `USDCHF=X`), **`REENTRY_COOLDOWN_SEC`** / **`REENTRY_DELTA_PCT`**, **`TIME_STOP_MIN`**. Set **`HEDGE_ENABLED=0`** in `.env` if hedging burns margin (recommended after large losses).
+
 **Equity**  
 `EQUITY_TAKE_PROFIT_PERCENT`, `EQUITY_STOP_LOSS_PERCENT`, `REENTRY_COOLDOWN_SEC_EQUITY`, `EQUITY_MIN_HOLD_MINUTES`, `EQUITY_SELL_CONFIRM_CYCLES`
 

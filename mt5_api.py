@@ -279,6 +279,10 @@ def place_market_order(symbol: str, quantity: float, tp_pct: float | None = None
         return False, f"No {'ask' if is_buy else 'bid'} price for {sym}"
 
     vol_desired = _normalize_volume(abs(float(quantity)), info)
+    # Global lot cap (matches config MAX_FX_LOTS_PER_ORDER) — last line of defence vs oversized orders.
+    _lot_cap = float(os.getenv("MAX_FX_LOTS_PER_ORDER", "0.35"))
+    if _lot_cap > 0 and vol_desired > _lot_cap:
+        vol_desired = _normalize_volume(_lot_cap, info)
     order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
     vol = _cap_volume_by_margin(sym, order_type, vol_desired, price, info, safety=0.85)
     if vol <= 0:
