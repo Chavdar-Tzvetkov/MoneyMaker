@@ -147,12 +147,18 @@ HEDGE_COOLDOWN_SEC = float(os.getenv("HEDGE_COOLDOWN_SEC", "60"))
 
 # --- Pre-trade confirmation (trend+vol floor) ---
 PRECONFIRM_ENABLED = bool(int(os.getenv("PRECONFIRM_ENABLED", "1")))
-PRECONFIRM_ATR_MIN = float(os.getenv("PRECONFIRM_ATR_MIN", "0.0007"))
-PRECONFIRM_STRICT  = bool(int(os.getenv("PRECONFIRM_STRICT", "1")))
-PRECONFIRM_GRACE_BPS = float(os.getenv("PRECONFIRM_GRACE_BPS", "15"))
+# Allow per-asset tuning (FX should be stricter; equities can be looser).
+PRECONFIRM_ATR_MIN_FX = float(os.getenv("PRECONFIRM_ATR_MIN_FX", os.getenv("PRECONFIRM_ATR_MIN", "0.0007")))
+PRECONFIRM_ATR_MIN_EQ = float(os.getenv("PRECONFIRM_ATR_MIN_EQ", os.getenv("PRECONFIRM_ATR_MIN", "0.0015")))
+PRECONFIRM_STRICT_FX  = bool(int(os.getenv("PRECONFIRM_STRICT_FX", os.getenv("PRECONFIRM_STRICT", "1"))))
+PRECONFIRM_STRICT_EQ  = bool(int(os.getenv("PRECONFIRM_STRICT_EQ", os.getenv("PRECONFIRM_STRICT", "1"))))
+PRECONFIRM_GRACE_BPS_FX = float(os.getenv("PRECONFIRM_GRACE_BPS_FX", os.getenv("PRECONFIRM_GRACE_BPS", "15")))
+PRECONFIRM_GRACE_BPS_EQ = float(os.getenv("PRECONFIRM_GRACE_BPS_EQ", os.getenv("PRECONFIRM_GRACE_BPS", "15")))
 
 # --- Decisive Mode (nudge after HOLD streak) ---
 DECISIVE_MODE = bool(int(os.getenv("DECISIVE_MODE", "1")))
+DECISIVE_MODE_FX = bool(int(os.getenv("DECISIVE_MODE_FX", "0")))  # default off for FX (reduces chop)
+DECISIVE_MODE_EQ = bool(int(os.getenv("DECISIVE_MODE_EQ", "1")))
 HOLD_STREAK_TRIGGER = int(os.getenv("HOLD_STREAK_TRIGGER", "3"))
 NUDGE_WITHIN_GRACE_BPS = float(os.getenv("NUDGE_WITHIN_GRACE_BPS", "60"))
 NUDGE_MIN_ATR_FRAC = float(os.getenv("NUDGE_MIN_ATR_FRAC", "0.5"))
@@ -762,13 +768,16 @@ def _pretrade_filter(symbol: str, outcome: Optional[str], df=None) -> Optional[s
         sma50 = float(c.rolling(50).mean().iloc[-1])
 
         atrp = _atr_percent(df)
-        if atrp < PRECONFIRM_ATR_MIN:
-            print(f"[PRECHECK] {symbol}: block {outcome} (ATR {atrp:.4f} < {PRECONFIRM_ATR_MIN:.4f})")
+        atr_min = PRECONFIRM_ATR_MIN_FX if is_forex(symbol) else PRECONFIRM_ATR_MIN_EQ
+        if atrp < atr_min:
+            print(f"[PRECHECK] {symbol}: block {outcome} (ATR {atrp:.4f} < {atr_min:.4f})")
             return "HOLD"
 
-        grace = (price * PRECONFIRM_GRACE_BPS) / 10000.0
+        grace_bps = PRECONFIRM_GRACE_BPS_FX if is_forex(symbol) else PRECONFIRM_GRACE_BPS_EQ
+        grace = (price * grace_bps) / 10000.0
 
-        if PRECONFIRM_STRICT:
+        strict = PRECONFIRM_STRICT_FX if is_forex(symbol) else PRECONFIRM_STRICT_EQ
+        if strict:
             ok_buy  = (price > sma20 > sma50)
             ok_sell = (price < sma20 < sma50)
         else:
@@ -823,7 +832,13 @@ def _spike_fade_adjust(symbol: str, df, outcome: Optional[str]) -> Optional[str]
 
 # --------------------------- Decisive Mode (nudge) ---------------------------
 def _decisive_nudge(symbol: str, outcome: Optional[str], df) -> Optional[str]:
-    if not DECISIVE_MODE or outcome != "HOLD":
+    if outcome != "HOLD":
+        return outcome
+    if not DECISIVE_MODE:
+        return outcome
+    if is_forex(symbol) and not DECISIVE_MODE_FX:
+        return outcome
+    if (not is_forex(symbol)) and not DECISIVE_MODE_EQ:
         return outcome
     if df is None or df.empty or "Close" not in df.columns or len(df) < 50:
         return outcome
@@ -835,7 +850,8 @@ def _decisive_nudge(symbol: str, outcome: Optional[str], df) -> Optional[str]:
         sma50 = float(c.rolling(50).mean().iloc[-1])
 
         atrp = _atr_percent(df)
-        if atrp < max(1e-9, PRECONFIRM_ATR_MIN * NUDGE_MIN_ATR_FRAC):
+        atr_min = PRECONFIRM_ATR_MIN_FX if is_forex(symbol) else PRECONFIRM_ATR_MIN_EQ
+        if atrp < max(1e-9, atr_min * NUDGE_MIN_ATR_FRAC):
             return outcome
 
         grace = (price * NUDGE_WITHIN_GRACE_BPS) / 10000.0

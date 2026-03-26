@@ -10,7 +10,7 @@ FOREX_BLOCKED_SYMBOLS = []
 
 # Symbols that historically showed many small losses / chop: use a fraction of normal FX risk.
 FOREX_REDUCED_RISK_SYMBOLS = [s.strip() for s in os.getenv(
-    "FOREX_REDUCED_RISK_SYMBOLS", "USDCHF=X"
+    "FOREX_REDUCED_RISK_SYMBOLS", "USDCHF=X,GBPUSD=X"
 ).split(",") if s.strip()]
 FOREX_REDUCED_RISK_MULT = float(os.getenv("FOREX_REDUCED_RISK_MULT", "0.5"))
 
