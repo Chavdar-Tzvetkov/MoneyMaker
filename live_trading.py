@@ -148,7 +148,7 @@ HEDGE_COOLDOWN_SEC = float(os.getenv("HEDGE_COOLDOWN_SEC", "60"))
 # --- Pre-trade confirmation (trend+vol floor) ---
 PRECONFIRM_ENABLED = bool(int(os.getenv("PRECONFIRM_ENABLED", "1")))
 # Allow per-asset tuning (FX should be stricter; equities can be looser).
-PRECONFIRM_ATR_MIN_FX = float(os.getenv("PRECONFIRM_ATR_MIN_FX", os.getenv("PRECONFIRM_ATR_MIN", "0.0007")))
+PRECONFIRM_ATR_MIN_FX = float(os.getenv("PRECONFIRM_ATR_MIN_FX", os.getenv("PRECONFIRM_ATR_MIN", "0.00025")))
 PRECONFIRM_ATR_MIN_EQ = float(os.getenv("PRECONFIRM_ATR_MIN_EQ", os.getenv("PRECONFIRM_ATR_MIN", "0.0015")))
 PRECONFIRM_STRICT_FX  = bool(int(os.getenv("PRECONFIRM_STRICT_FX", os.getenv("PRECONFIRM_STRICT", "1"))))
 PRECONFIRM_STRICT_EQ  = bool(int(os.getenv("PRECONFIRM_STRICT_EQ", os.getenv("PRECONFIRM_STRICT", "1"))))
