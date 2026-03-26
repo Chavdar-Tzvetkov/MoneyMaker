@@ -1,4 +1,4 @@
-﻿from db.db_session import SessionLocal
+from db.db_session import SessionLocal
 from db.models import Position
 from datetime import datetime
 
@@ -9,7 +9,12 @@ def get_position(symbol: str) -> Position | None:
     try:
         position = session.query(Position).filter_by(symbol=symbol).first()
         if position:
-            print(f"[DB] Found existing position for {symbol}: qty={position.quantity}, avg_price={position.average_price}")
+            qty = float(position.quantity or 0.0)
+            avg = float(position.average_price or 0.0)
+            if abs(qty) > 1e-9:
+                print(f"[DB] Found OPEN position for {symbol}: qty={qty}, avg_price={avg}")
+            else:
+                print(f"[DB] Found FLAT position row for {symbol}: qty=0.0 (no open position)")
         else:
             print(f"[DB] No existing position for {symbol}.")
         return position
@@ -70,7 +75,12 @@ def upsert_position(symbol: str, quantity: float, price: float, *, strict: bool 
             session.add(position)
 
         session.commit()
-        print(f"[DB] upsert_position → {symbol}: qty={position.quantity}, avg_price={position.average_price:.2f}")
+        qty_now = float(position.quantity or 0.0)
+        avg_now = float(position.average_price or 0.0)
+        if abs(qty_now) > 1e-9:
+            print(f"[DB] upsert_position → {symbol}: OPEN qty={qty_now}, avg_price={avg_now:.4f}")
+        else:
+            print(f"[DB] upsert_position → {symbol}: FLAT qty=0.0")
 
     except Exception as e:
         session.rollback()
