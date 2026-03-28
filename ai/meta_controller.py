@@ -49,11 +49,12 @@ ACTION_NAMES_FX_TREND: List[str] = [
 ACTION_NAMES_FX_RANGE: List[str] = [
     "Scalping", "RSI_MR", "RangeMR", "ZScore_MR", "Bollinger", "SMA_conservative", "Hold",
 ]
+# Equity gating: trend-first, and Bollinger only in explicit range regime.
 ACTION_NAMES_EQUITY_TREND: List[str] = [
-    "SMA_conservative", "SMA_aggressive", "MACD_Trend", "Supertrend", "EMA_Cross", "Breakout", "Bollinger", "Hold",
+    "SMA_conservative", "SMA_aggressive", "MACD_Trend", "Supertrend", "EMA_Cross", "Breakout", "Hold",
 ]
 ACTION_NAMES_EQUITY_RANGE: List[str] = [
-    "Bollinger", "SMA_conservative", "EMA_Cross", "Hold",
+    "Bollinger", "Hold",
 ]
 
 STATE_DIR = os.path.join("state", "linucb")
@@ -239,9 +240,13 @@ class MetaController:
 
     def _allowed_actions_for_regime(self, symbol: Optional[str], regime: str) -> Optional[List[str]]:
         """Return list of action names allowed for this (platform, regime), or None to allow all."""
-        if not symbol or regime not in ("trend", "range"):
+        if not symbol:
             return None
         is_fx = _is_forex(symbol)
+        if regime not in ("trend", "range"):
+            # Trend-first default for equities when regime is unknown/insufficient.
+            # FX keeps prior behavior (no extra restriction) to avoid over-blocking.
+            return ACTION_NAMES_EQUITY_TREND if not is_fx else None
         if is_fx:
             return ACTION_NAMES_FX_TREND if regime == "trend" else ACTION_NAMES_FX_RANGE
         return ACTION_NAMES_EQUITY_TREND if regime == "trend" else ACTION_NAMES_EQUITY_RANGE
