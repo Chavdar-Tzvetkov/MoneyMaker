@@ -1059,6 +1059,11 @@ def run_live_trading():
     print(f"Tracking {len(all_symbols)} symbols")
     print(f"[AI-KNOBS] min_margin={os.getenv('AI_MIN_UCB_MARGIN','0.00')} ucb_floor={os.getenv('AI_UCB_FLOOR','-1.00')} uncertainty_max={MAX_ACCEPTABLE_UNCERTAINTY}")
     print(f"[LLM-KNOBS] enabled={int(LLM_ENABLED)} mode={LLM_MODE} min_conf={LLM_MIN_CONF}")
+    print(
+        f"[PRECHECK-KNOBS] FX(atr_min={PRECONFIRM_ATR_MIN_FX}, strict={int(PRECONFIRM_STRICT_FX)}, grace_bps={PRECONFIRM_GRACE_BPS_FX}) "
+        f"| EQ(atr_min={PRECONFIRM_ATR_MIN_EQ}, strict={int(PRECONFIRM_STRICT_EQ)}, grace_bps={PRECONFIRM_GRACE_BPS_EQ}) "
+        f"| DECISIVE(FX={int(DECISIVE_MODE_FX)}, EQ={int(DECISIVE_MODE_EQ)})"
+    )
     print(f"[USER] base_tz={BASE_TIMEZONE} | MT5_ref={REFERENCE_EQUITY_MT5 or 'live'} T212_ref={REFERENCE_EQUITY_T212 or 'live'}")
     print("==================================================\n")
 
