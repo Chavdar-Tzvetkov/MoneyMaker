@@ -3,7 +3,7 @@ import os
 from datetime import time
 
 # Trade only these symbols for now (based on performance analysis)
-FOREX_ALLOWED_SYMBOLS = ["EURUSD=X", "GBPUSD=X", "USDCHF=X"]  # MT5 mapping handled elsewhere
+FOREX_ALLOWED_SYMBOLS = ["EURUSD=X", "GBPUSD=X", "USDCHF=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "EURGBP=X"]  # MT5 mapping handled elsewhere
 
 # Temporarily block poor performers
 FOREX_BLOCKED_SYMBOLS = []

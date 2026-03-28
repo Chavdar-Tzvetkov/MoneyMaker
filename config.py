@@ -30,7 +30,7 @@ INSTRUMENTS = [
 ]
 
 # Keep =X for yfinance; we strip it only when sending to MT5.
-FOREX_SYMBOLS = ["EURUSD=X", "USDCHF=X", "GBPUSD=X"]  # (USDJPY removed as requested)
+FOREX_SYMBOLS = ["EURUSD=X", "USDCHF=X", "GBPUSD=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "EURGBP=X"]  # expanded majors (USDJPY still excluded)
 
 # Global flag (set by main.py)
 LIVE_TRADING = False
