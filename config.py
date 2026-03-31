@@ -65,7 +65,7 @@ _EXTRA_INSTRUMENTS = _parse_symbol_list(os.getenv("EXTRA_INSTRUMENTS", ""))
 INSTRUMENTS = _merge_symbols(_BASE_INSTRUMENTS, _SECTOR_INSTRUMENTS, _EXTRA_INSTRUMENTS)
 
 # Keep =X for yfinance; we strip it only when sending to MT5.
-FOREX_SYMBOLS = ["EURUSD=X", "USDCHF=X", "GBPUSD=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "EURGBP=X"]  # expanded majors (USDJPY still excluded)
+FOREX_SYMBOLS = ["EURUSD=X", "USDCHF=X", "GBPUSD=X", "USDCAD=X", "NZDUSD=X", "EURGBP=X"]  # AUDUSD removed (no stable ticks)
 
 # Global flag (set by main.py)
 LIVE_TRADING = False
