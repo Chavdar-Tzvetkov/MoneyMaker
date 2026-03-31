@@ -278,6 +278,30 @@ def place_market_order(symbol: str, quantity: float, tp_pct: float | None = None
     if not price or price <= 0:
         return False, f"No {'ask' if is_buy else 'bid'} price for {sym}"
 
+    # Execution-quality gate: skip entries when spread is abnormally wide.
+    bid = float(getattr(tick, "bid", 0.0) or 0.0)
+    ask = float(getattr(tick, "ask", 0.0) or 0.0)
+    if bid > 0.0 and ask > 0.0 and ask >= bid:
+        spread_abs = ask - bid
+        mid = (ask + bid) / 2.0
+        if mid > 0.0:
+            max_spread_rel = float(os.getenv("MT5_MAX_SPREAD_REL", "0.00035"))  # 3.5 bps default
+            spread_rel = spread_abs / mid
+            if max_spread_rel > 0 and spread_rel > max_spread_rel:
+                return False, (
+                    f"Spread too wide for {sym}: rel={spread_rel:.5f} > max={max_spread_rel:.5f} "
+                    f"(bid={bid:.5f}, ask={ask:.5f})"
+                )
+
+        max_spread_points = float(os.getenv("MT5_MAX_SPREAD_POINTS", "0"))  # 0 disables points check
+        point = float(getattr(info, "point", 0.0) or 0.0)
+        if max_spread_points > 0 and point > 0:
+            spread_points = spread_abs / point
+            if spread_points > max_spread_points:
+                return False, (
+                    f"Spread too wide for {sym}: {spread_points:.1f} points > max={max_spread_points:.1f}"
+                )
+
     vol_desired = _normalize_volume(abs(float(quantity)), info)
     # Global lot cap (matches config MAX_FX_LOTS_PER_ORDER) — last line of defence vs oversized orders.
     _lot_cap = float(os.getenv("MAX_FX_LOTS_PER_ORDER", "0.35"))

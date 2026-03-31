@@ -231,13 +231,25 @@ def switch_strategy_if_needed(
     pnl_equity = get_today_pnl_equity()
     pnl_total = get_today_pnl()
 
+    # Use per-account daily loss fractions from config as primary limits.
+    # HALT_THRESHOLD remains as fallback compatibility if these are missing/invalid.
+    fx_daily_loss_frac = float(getattr(config, "FX_MAX_DAILY_LOSS_FRAC", abs(HALT_THRESHOLD)) or abs(HALT_THRESHOLD))
+    eq_daily_loss_frac = float(getattr(config, "EQ_MAX_DAILY_LOSS_FRAC", abs(HALT_THRESHOLD)) or abs(HALT_THRESHOLD))
+    if fx_daily_loss_frac <= 0:
+        fx_daily_loss_frac = abs(HALT_THRESHOLD)
+    if eq_daily_loss_frac <= 0:
+        eq_daily_loss_frac = abs(HALT_THRESHOLD)
+
     # 1) FX circuit breaker (MT5 account only)
     mt5_eq = float(mt5_equity or 0.0) if mt5_equity is not None else 0.0
     if CIRCUIT_BREAKER_ENABLED and mt5_eq > 0:
         pnl_fx_frac = pnl_fx / mt5_eq
-        if pnl_fx_frac <= HALT_THRESHOLD:
+        if pnl_fx_frac <= -fx_daily_loss_frac:
             if not _halt_active_fx():
-                print(f"[Strategy][HALT] MT5: daily FX PnL {pnl_fx:.2f} USD = {pnl_fx_frac*100:.1f}% of {mt5_eq:.0f} → halting FX {HALT_MINUTES} min")
+                print(
+                    f"[Strategy][HALT] MT5: daily FX PnL {pnl_fx:.2f} USD = {pnl_fx_frac*100:.1f}% "
+                    f"of {mt5_eq:.0f} (limit {-fx_daily_loss_frac*100:.1f}%) → halting FX {HALT_MINUTES} min"
+                )
                 _trip_halt_fx(HALT_MINUTES)
         else:
             if _halt_active_fx():
@@ -247,9 +259,12 @@ def switch_strategy_if_needed(
     t212_eq = float(t212_equity or 0.0) if t212_equity is not None else 0.0
     if CIRCUIT_BREAKER_ENABLED and t212_eq > 0:
         pnl_equity_frac = pnl_equity / t212_eq
-        if pnl_equity_frac <= HALT_THRESHOLD:
+        if pnl_equity_frac <= -eq_daily_loss_frac:
             if not _halt_active_equity():
-                print(f"[Strategy][HALT] T212: daily equity PnL {pnl_equity:.2f} USD = {pnl_equity_frac*100:.1f}% of {t212_eq:.0f} → halting equity {HALT_MINUTES} min")
+                print(
+                    f"[Strategy][HALT] T212: daily equity PnL {pnl_equity:.2f} USD = {pnl_equity_frac*100:.1f}% "
+                    f"of {t212_eq:.0f} (limit {-eq_daily_loss_frac*100:.1f}%) → halting equity {HALT_MINUTES} min"
+                )
                 _trip_halt_equity(HALT_MINUTES)
         else:
             if _halt_active_equity():
