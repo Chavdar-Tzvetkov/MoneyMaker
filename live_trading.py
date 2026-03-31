@@ -29,7 +29,13 @@ import requests
 
 from strategies.sma_strategy import analyze_sma
 from strategies.scalping_strategy import analyze_scalping
-from strategies.strategy_config import ACTIVE_STRATEGY, switch_strategy_if_needed, is_trading_halted
+from strategies.strategy_config import (
+    ACTIVE_STRATEGY,
+    switch_strategy_if_needed,
+    is_trading_halted,
+    get_today_pnl_fx,
+    get_today_pnl_equity,
+)
 
 from utils.market_data import get_last_price, load_recent_bars
 from utils.market_hours import is_market_open
@@ -195,6 +201,22 @@ _equity_position_open_ts: Dict[str, float] = {}
 _equity_sell_streak: Dict[str, int] = {}
 # HOLD streak tracker
 _hold_streak: Dict[str, int] = {}
+
+# Auto risk switching (dynamic sizing)
+AUTO_RISK_SWITCH_ENABLED = bool(int(os.getenv("AUTO_RISK_SWITCH_ENABLED", "1")))
+AUTO_RISK_DD_SOFT = float(os.getenv("AUTO_RISK_DD_SOFT", "0.03"))   # 3% drawdown -> reduced risk
+AUTO_RISK_DD_HARD = float(os.getenv("AUTO_RISK_DD_HARD", "0.06"))   # 6% drawdown -> defensive risk
+AUTO_RISK_MULT_SOFT = float(os.getenv("AUTO_RISK_MULT_SOFT", "0.70"))
+AUTO_RISK_MULT_HARD = float(os.getenv("AUTO_RISK_MULT_HARD", "0.40"))
+AUTO_RISK_UP_PNL_FRAC = float(os.getenv("AUTO_RISK_UP_PNL_FRAC", "0.01"))  # +1% daily pnl -> small upshift
+AUTO_RISK_MULT_UP = float(os.getenv("AUTO_RISK_MULT_UP", "1.10"))
+
+_fx_risk_frac_live = float(FX_RISK_PER_TRADE_FRAC or 0.0)
+_eq_risk_frac_live = float(EQ_RISK_PER_TRADE_FRAC or 0.0)
+_fx_risk_ref_eq: float | None = float(REFERENCE_EQUITY_MT5) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else None
+_eq_risk_ref_eq: float | None = float(REFERENCE_EQUITY_T212) if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0 else None
+_last_risk_profile_fx: str = ""
+_last_risk_profile_eq: str = ""
 
 # =============================================================================
 # Strategy runners used by the AI decision
@@ -962,6 +984,73 @@ def _feed_close_reward(meta, symbol: str, realized_pnl: float, is_fx: bool) -> N
         print(f"[AI REWARD] skip feed for {symbol}: {e}")
 
 
+def _pick_risk_multiplier(drawdown_frac: float, pnl_frac: float) -> Tuple[float, str]:
+    if drawdown_frac >= AUTO_RISK_DD_HARD:
+        return max(0.0, AUTO_RISK_MULT_HARD), "DEFENSIVE_HARD"
+    if drawdown_frac >= AUTO_RISK_DD_SOFT:
+        return max(0.0, AUTO_RISK_MULT_SOFT), "DEFENSIVE_SOFT"
+    if pnl_frac >= AUTO_RISK_UP_PNL_FRAC and drawdown_frac <= max(0.0, AUTO_RISK_DD_SOFT * 0.5):
+        return max(0.0, AUTO_RISK_MULT_UP), "OFFENSIVE"
+    return 1.0, "BASE"
+
+
+def _refresh_dynamic_risk(mt5_eq: float, t212_eq: float) -> None:
+    """Update live risk fractions once per loop based on drawdown and daily pnl."""
+    global _fx_risk_frac_live, _eq_risk_frac_live
+    global _fx_risk_ref_eq, _eq_risk_ref_eq
+    global _last_risk_profile_fx, _last_risk_profile_eq
+
+    base_fx = float(FX_RISK_PER_TRADE_FRAC or 0.0)
+    base_eq = float(EQ_RISK_PER_TRADE_FRAC or 0.0)
+
+    if not AUTO_RISK_SWITCH_ENABLED:
+        _fx_risk_frac_live = base_fx
+        _eq_risk_frac_live = base_eq
+        return
+
+    if _fx_risk_ref_eq is None and mt5_eq > 0:
+        _fx_risk_ref_eq = mt5_eq
+    if _eq_risk_ref_eq is None and t212_eq > 0:
+        _eq_risk_ref_eq = t212_eq
+
+    try:
+        pnl_fx = float(get_today_pnl_fx() or 0.0)
+    except Exception:
+        pnl_fx = 0.0
+    try:
+        pnl_eq = float(get_today_pnl_equity() or 0.0)
+    except Exception:
+        pnl_eq = 0.0
+
+    # FX profile
+    if mt5_eq > 0 and (_fx_risk_ref_eq or 0) > 0:
+        fx_ref = float(_fx_risk_ref_eq or mt5_eq)
+        fx_dd = max(0.0, (fx_ref - mt5_eq) / max(fx_ref, 1e-9))
+        fx_pnl_frac = pnl_fx / mt5_eq
+        fx_mult, fx_profile = _pick_risk_multiplier(fx_dd, fx_pnl_frac)
+    else:
+        fx_mult, fx_profile = 1.0, "BASE"
+    _fx_risk_frac_live = base_fx * fx_mult
+
+    # Equity profile
+    if t212_eq > 0 and (_eq_risk_ref_eq or 0) > 0:
+        eq_ref = float(_eq_risk_ref_eq or t212_eq)
+        eq_dd = max(0.0, (eq_ref - t212_eq) / max(eq_ref, 1e-9))
+        eq_pnl_frac = pnl_eq / t212_eq
+        eq_mult, eq_profile = _pick_risk_multiplier(eq_dd, eq_pnl_frac)
+    else:
+        eq_mult, eq_profile = 1.0, "BASE"
+    _eq_risk_frac_live = base_eq * eq_mult
+
+    # Log only when profile changes to avoid noise.
+    if fx_profile != _last_risk_profile_fx:
+        print(f"[RISK PROFILE][FX] {fx_profile} | frac={_fx_risk_frac_live:.6f} (base={base_fx:.6f})")
+        _last_risk_profile_fx = fx_profile
+    if eq_profile != _last_risk_profile_eq:
+        print(f"[RISK PROFILE][EQ] {eq_profile} | frac={_eq_risk_frac_live:.6f} (base={base_eq:.6f})")
+        _last_risk_profile_eq = eq_profile
+
+
 def _compute_risk_based_quantity(symbol: str, price: float) -> float:
     """
     Compute a position size based on configured per-trade risk fractions.
@@ -989,7 +1078,7 @@ def _compute_risk_based_quantity(symbol: str, price: float) -> float:
         sl_frac = abs(float(STOP_LOSS_PERCENT or 0.0))
         if eq <= 0.0 or sl_frac <= 0.0:
             return base_qty or 0.1
-        risk_per_trade = eq * float(FX_RISK_PER_TRADE_FRAC or 0.0)
+        risk_per_trade = eq * float(_fx_risk_frac_live or 0.0)
         if symbol in (FOREX_REDUCED_RISK_SYMBOLS or []):
             risk_per_trade *= float(FOREX_REDUCED_RISK_MULT or 1.0)
         if risk_per_trade <= 0.0:
@@ -1027,7 +1116,7 @@ def _compute_risk_based_quantity(symbol: str, price: float) -> float:
     if eq_val <= 0.0 or sl_frac_eq <= 0.0:
         return base_qty or 1.0
 
-    risk_per_trade_eq = eq_val * float(EQ_RISK_PER_TRADE_FRAC or 0.0)
+    risk_per_trade_eq = eq_val * float(_eq_risk_frac_live or 0.0)
     if risk_per_trade_eq <= 0.0:
         return base_qty or 1.0
 
@@ -1065,6 +1154,11 @@ def run_live_trading():
         f"| DECISIVE(FX={int(DECISIVE_MODE_FX)}, EQ={int(DECISIVE_MODE_EQ)})"
     )
     print(f"[USER] base_tz={BASE_TIMEZONE} | MT5_ref={REFERENCE_EQUITY_MT5 or 'live'} T212_ref={REFERENCE_EQUITY_T212 or 'live'}")
+    print(
+        f"[RISK-AUTO] enabled={int(AUTO_RISK_SWITCH_ENABLED)} "
+        f"dd_soft={AUTO_RISK_DD_SOFT:.2%} dd_hard={AUTO_RISK_DD_HARD:.2%} "
+        f"mult(soft/hard/up)=({AUTO_RISK_MULT_SOFT:.2f}/{AUTO_RISK_MULT_HARD:.2f}/{AUTO_RISK_MULT_UP:.2f})"
+    )
     print("==================================================\n")
 
     # One-time T212 probe & reconciliation (single portfolio fetch to avoid 429 at startup)
@@ -1158,6 +1252,7 @@ def run_live_trading():
                 mt5_eq = 5000.0
                 t212_eq = 5000.0
             switch_strategy_if_needed(mt5_equity=mt5_eq, t212_equity=t212_eq)
+            _refresh_dynamic_risk(mt5_eq=mt5_eq, t212_eq=t212_eq)
 
             # --------------------------- Trading pass --------------------------
             latest_outcomes: Dict[str, str] = {}
