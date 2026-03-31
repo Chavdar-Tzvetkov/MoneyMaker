@@ -16,6 +16,9 @@ It supports multiple strategies (SMA, Scalping, RSI, Donchian, MACD, Supertrend,
 - ⏱ **Scheduler** – Timed executions during market hours
 - 🤖 **Live trading** – Trading212 (equities) and MT5 (forex) in one process; **separate accounts**, per-platform circuit breaker and position sizing
 - 🛡 **Configurable TP/SL, trailing stops, profit guard**
+- 📝 **Persistent runtime logs** – Console output is mirrored to timestamped `.txt` files under `logs/`
+- ⚖️ **Dynamic risk profile switching** – Auto-adjusts risk fractions per account (BASE / OFFENSIVE / DEFENSIVE) from live drawdown and daily PnL
+- ✅ **Execution quality gates** – MT5 spread filter can skip entries when spread is too wide
 - 🔔 **Future**: Telegram/Slack alerts
 
 ---
@@ -40,7 +43,8 @@ MoneyMaker/
 ├── utils/                  # Market data, hours, calendar, symbols
 ├── db/                     # MSSQL session, models
 ├── services/               # PnL, position, Alpha Vantage
-├── state/linucb/           # Persisted LinUCB state per symbol (created at runtime)
+├── state/linucb/           # Persisted LinUCB state per symbol (created at runtime, git-ignored)
+├── logs/                   # Runtime session logs (.txt, git-ignored)
 ├── requirements.txt
 └── .env                    # API keys, DB, env overrides (copy from .env.example if present)
 ```
@@ -94,6 +98,7 @@ Create `.env` (or copy from `.env.example` if available) and set at least:
 - **Platform-specific arms:** FX symbols only use FX-suited strategies (e.g. Scalping, RSI_MR, RangeMR, ZScore_MR); equity symbols use equity-suited ones (e.g. SMA, MACD, Supertrend, Breakout). See `ai/meta_controller.py` (`ACTION_NAMES_FX`, `ACTION_NAMES_EQUITY`).
 - **Regime filter:** When `REGIME_FILTER_ENABLED=1` (default), ADX classifies each symbol as **trend** or **range**. The meta-controller then restricts to trend-following arms in trend and mean-reversion arms in range. Env: `REGIME_ADX_PERIOD`, `REGIME_ADX_TREND_THRESHOLD`.
 - **Profit-oriented:** `MIN_RISK_REWARD_RATIO` blocks opening trades when configured TP/SL ratio is below the value; `REWARD_PROFIT_BIAS` scales up positive rewards so the bandit leans toward profitable arms. **Profitability is not guaranteed.**
+- **Data hygiene:** Recent-bar loader can drop the in-progress candle and invalid OHLC rows to reduce noisy/partial-bar signals.
 - **LLM (optional):** Set `LLM_ENABLED=1` and `OPENAI_API_KEY`. The LLM can tie-break, veto, or act as primary advisor. See `ai/llm_decider.py`.
 
 For more detail (features, reward flow, tuning), see **`ai/README_AI_LEARNING.md`**.
@@ -123,6 +128,15 @@ For more detail (features, reward flow, tuning), see **`ai/README_AI_LEARNING.md
 **Capital preservation (FX drawdown protection)**  
 Defaults aim to limit wipe-outs: **`MAX_FX_LOTS_PER_ORDER`** (hard cap per MT5 order, e.g. `0.35`), **`MAX_CONCURRENT_FOREX`** (max open FX positions), **`FOREX_REDUCED_RISK_SYMBOLS`** / **`FOREX_REDUCED_RISK_MULT`** (half-size on choppy pairs like `USDCHF=X`), **`REENTRY_COOLDOWN_SEC`** / **`REENTRY_DELTA_PCT`**, **`TIME_STOP_MIN`**. Set **`HEDGE_ENABLED=0`** in `.env` if hedging burns margin (recommended after large losses).
 
+**Auto risk profile switch**  
+`AUTO_RISK_SWITCH_ENABLED`, `AUTO_RISK_DD_SOFT`, `AUTO_RISK_DD_HARD`, `AUTO_RISK_MULT_SOFT`, `AUTO_RISK_MULT_HARD`, `AUTO_RISK_UP_PNL_FRAC`, `AUTO_RISK_MULT_UP`
+
+**Execution/data quality**  
+`MT5_MAX_SPREAD_REL`, `MT5_MAX_SPREAD_POINTS`, `DROP_INCOMPLETE_LAST_BAR`
+
+**Runtime file logging**  
+`VERBOSE_LOG_TO_FILE`, `VERBOSE_LOG_DIR`, `VERBOSE_LOG_PREFIX`, `VERBOSE_LOG_FILE`
+
 **Equity**  
 `EQUITY_TAKE_PROFIT_PERCENT`, `EQUITY_STOP_LOSS_PERCENT`, `REENTRY_COOLDOWN_SEC_EQUITY`, `EQUITY_MIN_HOLD_MINUTES`, `EQUITY_SELL_CONFIRM_CYCLES`
 
@@ -148,7 +162,8 @@ Calendar: `utils/market_calendar.py` (`US_EQUITY_CLOSED`, `US_EQUITY_EARLY_CLOSE
 1. In project root with venv activated: `build.bat`
 2. Output: `dist\MoneyMaker\` (includes `MoneyMaker.exe` and dependencies)
 3. Copy `.env` and optionally `state\` (LinUCB state) into `dist\MoneyMaker\`
-4. Run: `cd dist\MoneyMaker` then `MoneyMaker.exe --live` (or add `--live` to shortcut Target)
+4. Optional: create `logs\` if you want logs in a fixed folder from first run
+5. Run: `cd dist\MoneyMaker` then `MoneyMaker.exe --live` (or add `--live` to shortcut Target)
 
 Requires PyInstaller. Icon: `icons\moneymaker_bot_icon.ico` if present.
 
