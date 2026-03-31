@@ -129,7 +129,7 @@ LLM_MIN_CONF = float(os.getenv("LLM_MIN_CONF", "0.65"))
 # Feature flags / limits
 # =============================================================================
 USE_META_DECIDER = bool(int(os.getenv("USE_META_DECIDER", "1")))
-MAX_TRADES_PER_HOUR = int(os.getenv("MAX_TRADES_PER_HOUR", "6"))
+MAX_TRADES_PER_HOUR = int(os.getenv("MAX_TRADES_PER_HOUR", str(RATE_LIMIT.get("MAX_TRADES_PER_HOUR", 5))))
 MAX_ACCEPTABLE_UNCERTAINTY = float(os.getenv("MAX_ACCEPTABLE_UNCERTAINTY", "0.95"))
 
 # Bar interval for AI context

@@ -113,7 +113,7 @@ PROFIT = {
 
 # ----- Rate limiting (per symbol) -----
 RATE_LIMIT = {
-    "MAX_TRADES_PER_HOUR": int(os.getenv("MAX_TRADES_PER_HOUR", "8")),           # FX
+    "MAX_TRADES_PER_HOUR": int(os.getenv("MAX_TRADES_PER_HOUR", "5")),           # FX
     "EQUITY_MAX_TRADES_PER_HOUR": int(os.getenv("EQUITY_MAX_TRADES_PER_HOUR", "3")),  # stocks (stricter)
 }
 

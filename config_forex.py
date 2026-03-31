@@ -26,7 +26,7 @@ TIME_STOP_MIN = int(os.getenv("TIME_STOP_MIN", "45"))   # exit stagnant trades s
 MIN_PROGRESS_R = float(os.getenv("MIN_PROGRESS_R", "0.35"))  # need a bit more progress to avoid time-stop noise
 
 # Concurrency: cap number of simultaneous FX positions (fewer = less correlated blow-ups)
-MAX_CONCURRENT_FOREX = int(os.getenv("MAX_CONCURRENT_FOREX", "2"))
+MAX_CONCURRENT_FOREX = int(os.getenv("MAX_CONCURRENT_FOREX", "5"))
 
 # Optional: close all forex positions when broker session ends
 FORCE_FLAT_AT_SESSION_END = False

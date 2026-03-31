@@ -8,6 +8,11 @@ from typing import List
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.getcwd())
 
+from utils.runtime_logging import setup_runtime_file_logging
+
+# Keep normal console output, but also persist verbose logs to a txt file.
+setup_runtime_file_logging()
+
 from smart_live_trading import main as ai_main
 from utils.scheduler import start_scheduler
 from live_trading import run_live_trading

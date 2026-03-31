@@ -1,6 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import pandas as pd
 import yfinance as yf
@@ -25,6 +27,49 @@ except Exception:
     _mt5_get_recent_bars = None
 
 REQUIRED = ("Open", "High", "Low", "Close")
+
+
+def _interval_to_timedelta(interval: str) -> Optional[timedelta]:
+    s = str(interval).strip().lower()
+    try:
+        if s.endswith("m"):
+            return timedelta(minutes=int(s[:-1]))
+        if s.endswith("h"):
+            return timedelta(hours=int(s[:-1]))
+        if s.endswith("d"):
+            return timedelta(days=int(s[:-1]))
+    except Exception:
+        return None
+    return None
+
+
+def _drop_incomplete_last_bar(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """
+    Drop the currently-forming candle so strategies operate on closed bars only.
+    Controlled by DROP_INCOMPLETE_LAST_BAR env (default: 1).
+    """
+    enabled = os.getenv("DROP_INCOMPLETE_LAST_BAR", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if not enabled or df is None or df.empty:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex) or len(df.index) < 2:
+        return df
+
+    step = _interval_to_timedelta(interval)
+    if step is None:
+        return df
+
+    last_ts = df.index[-1]
+    try:
+        if getattr(last_ts, "tzinfo", None) is None:
+            now = datetime.utcnow()
+        else:
+            now = datetime.now(timezone.utc).astimezone(last_ts.tzinfo)
+        # If the last candle has not fully elapsed, drop it.
+        if now < (last_ts + step):
+            return df.iloc[:-1]
+    except Exception:
+        return df
+    return df
 
 
 def _normalize_ohlc_columns(df: pd.DataFrame) -> Optional[pd.DataFrame]:
@@ -105,6 +150,20 @@ def _normalize_ohlc_columns(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         return None
 
     out = df.loc[:, list(REQUIRED)].dropna()
+
+    # Keep bars ordered and remove duplicate timestamps (late source corrections keep latest).
+    if isinstance(out.index, pd.DatetimeIndex):
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+
+    # Basic candle sanity checks to avoid feeding corrupt points into signals.
+    for c in REQUIRED:
+        out = out[pd.to_numeric(out[c], errors="coerce").notna()]
+    out = out.astype(float)
+    out = out[(out["Open"] > 0) & (out["High"] > 0) & (out["Low"] > 0) & (out["Close"] > 0)]
+    out = out[(out["High"] >= out["Low"])]
+    out = out[(out["High"] >= out["Open"]) & (out["High"] >= out["Close"])]
+    out = out[(out["Low"] <= out["Open"]) & (out["Low"] <= out["Close"])]
+
     return out if not out.empty else None
 
 
@@ -203,7 +262,8 @@ def load_recent_bars(symbol: str, lookback: str = "2d", interval: str = "5m") ->
     if is_forex(symbol):
         df_mt5 = _mt5_load_recent_bars_fx(symbol, lookback, interval)
         if df_mt5 is not None and not df_mt5.empty:
-            return df_mt5
+            df_mt5 = _drop_incomplete_last_bar(df_mt5, interval)
+            return df_mt5 if df_mt5 is not None and not df_mt5.empty else None
 
     # 2) Fallback: yfinance
     try:
@@ -218,6 +278,8 @@ def load_recent_bars(symbol: str, lookback: str = "2d", interval: str = "5m") ->
             group_by="column",
         )
         df = _normalize_ohlc_columns(df)
+        if df is not None and not df.empty:
+            df = _drop_incomplete_last_bar(df, interval)
         return df
     except Exception as e:
         print(f"[DATA ERROR] load_recent_bars {symbol}: {e}")
