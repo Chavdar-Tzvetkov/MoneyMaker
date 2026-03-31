@@ -3,6 +3,22 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+
+def _parse_symbol_list(value: str) -> list[str]:
+    return [s.strip().upper() for s in (value or "").split(",") if s.strip()]
+
+
+def _merge_symbols(*groups: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for grp in groups:
+        for s in grp:
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+    return out
+
+
 # ----- User base (location) and per-platform budgets -----
 # Base timezone for "today" (PnL day rollover, logs). Bulgaria = Europe/Sofia (EET/EEST).
 BASE_TIMEZONE = os.getenv("BASE_TIMEZONE", "Europe/Sofia")
@@ -25,9 +41,28 @@ SMA_THRESHOLDS = {
 }
 
 # ----- Instruments -----
-INSTRUMENTS = [
+_BASE_INSTRUMENTS = [
     "AAPL", "AVGO", "MSFT", "GOOGL", "TSLA", "AMZN", "NVDA", "AMD", "KO", "LVMUY", "RACE", "PLUG", "AIOT"
 ]
+
+# Added sector diversification for T212:
+# - Energy equities/ETF
+# - Water-focused equities/ETF
+# - Commodity exposure ETFs
+_SECTOR_INSTRUMENTS = [
+    # Energy
+    "XLE", "XOM", "CVX", "SHEL", "BP",
+    # Water
+    "PHO", "CGW", "AWK", "WTRG", "XYL",
+    # Commodities (ETF proxies)
+    "GLD", "SLV", "USO", "UNG", "DBA",
+]
+
+# Optional env override for quick additions without code edits:
+# EXTRA_INSTRUMENTS=AEP,NEE,TTE,...
+_EXTRA_INSTRUMENTS = _parse_symbol_list(os.getenv("EXTRA_INSTRUMENTS", ""))
+
+INSTRUMENTS = _merge_symbols(_BASE_INSTRUMENTS, _SECTOR_INSTRUMENTS, _EXTRA_INSTRUMENTS)
 
 # Keep =X for yfinance; we strip it only when sending to MT5.
 FOREX_SYMBOLS = ["EURUSD=X", "USDCHF=X", "GBPUSD=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "EURGBP=X"]  # expanded majors (USDJPY still excluded)
