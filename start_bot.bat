@@ -49,6 +49,8 @@ set "EQUITY_MAX_TRADES_PER_HOUR=2"
 set "FX_RISK_PER_TRADE_FRAC=0.0015"
 set "EQ_RISK_PER_TRADE_FRAC=0.0015"
 set "PG_REQUIRE_NOT_BUY=1"
+set "SUPERVISOR_ENABLED=1"
+set "SUPERVISOR_TUNE_EVERY_CYCLES=15"
 
 REM Optional: set in .env to avoid 429 and fix circuit breaker to your budgets (e.g. REFERENCE_EQUITY_MT5=9500 REFERENCE_EQUITY_T212=4200)
 REM Optional: clear circuit breaker on start once (CLEAR_HALT_ON_START=1) or relax threshold (CIRCUIT_BREAKER_HALT_THRESHOLD=-0.35)

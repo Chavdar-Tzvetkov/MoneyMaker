@@ -33,6 +33,7 @@ from strategies.strategy_config import (
     ACTIVE_STRATEGY,
     switch_strategy_if_needed,
     is_trading_halted,
+    is_trading_halted_fx,
     get_today_pnl_fx,
     get_today_pnl_equity,
 )
@@ -43,6 +44,7 @@ from utils.symbols import is_forex, normalize_symbol, to_mt5_symbol
 
 from ai.meta_controller import MetaController
 from ai.llm_decider import llm_decide, combine_llm_with_quant
+from ai.autonomous_supervisor import AutonomousSupervisor
 
 # Extra strategies
 from strategies.rsi_reversion import analyze_rsi
@@ -139,6 +141,8 @@ MAX_TRADES_PER_HOUR = int(os.getenv("MAX_TRADES_PER_HOUR", str(RATE_LIMIT.get("M
 MAX_ACCEPTABLE_UNCERTAINTY = float(os.getenv("MAX_ACCEPTABLE_UNCERTAINTY", "0.95"))
 # Small shaping weight for per-bar bandit updates; realized close-PnL remains primary.
 AI_STEP_REWARD_WEIGHT = float(os.getenv("AI_STEP_REWARD_WEIGHT", "0.10"))
+SUPERVISOR_ENABLED = bool(int(os.getenv("SUPERVISOR_ENABLED", "1")))
+SUPERVISOR_TUNE_EVERY_CYCLES = int(os.getenv("SUPERVISOR_TUNE_EVERY_CYCLES", "20"))
 
 # Bar interval for AI context
 AI_BAR_INTERVAL = os.getenv("AI_BAR_INTERVAL", "5m")
@@ -219,6 +223,12 @@ _fx_risk_ref_eq: float | None = float(REFERENCE_EQUITY_MT5) if REFERENCE_EQUITY_
 _eq_risk_ref_eq: float | None = float(REFERENCE_EQUITY_T212) if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0 else None
 _last_risk_profile_fx: str = ""
 _last_risk_profile_eq: str = ""
+_max_acceptable_uncertainty_live = float(MAX_ACCEPTABLE_UNCERTAINTY)
+_preconfirm_atr_min_fx_live = float(PRECONFIRM_ATR_MIN_FX)
+_preconfirm_grace_bps_fx_live = float(PRECONFIRM_GRACE_BPS_FX)
+_supervisor_fx_risk_mult = 1.0
+_supervisor_eq_risk_mult = 1.0
+_supervisor: AutonomousSupervisor | None = None
 
 # =============================================================================
 # Strategy runners used by the AI decision
@@ -798,12 +808,12 @@ def _pretrade_filter(symbol: str, outcome: Optional[str], df=None, strategy_name
         sma50 = float(c.rolling(50).mean().iloc[-1])
 
         atrp = _atr_percent(df)
-        atr_min = PRECONFIRM_ATR_MIN_FX if is_forex(symbol) else PRECONFIRM_ATR_MIN_EQ
+        atr_min = _preconfirm_atr_min_fx_live if is_forex(symbol) else PRECONFIRM_ATR_MIN_EQ
         if atrp < atr_min:
             print(f"[PRECHECK] {symbol}: block {outcome} (ATR {atrp:.4f} < {atr_min:.4f})")
             return "HOLD"
 
-        grace_bps = PRECONFIRM_GRACE_BPS_FX if is_forex(symbol) else PRECONFIRM_GRACE_BPS_EQ
+        grace_bps = _preconfirm_grace_bps_fx_live if is_forex(symbol) else PRECONFIRM_GRACE_BPS_EQ
         grace = (price * grace_bps) / 10000.0
 
         strat = (strategy_name or "").upper()
@@ -889,7 +899,7 @@ def _decisive_nudge(symbol: str, outcome: Optional[str], df) -> Optional[str]:
         sma50 = float(c.rolling(50).mean().iloc[-1])
 
         atrp = _atr_percent(df)
-        atr_min = PRECONFIRM_ATR_MIN_FX if is_forex(symbol) else PRECONFIRM_ATR_MIN_EQ
+        atr_min = _preconfirm_atr_min_fx_live if is_forex(symbol) else PRECONFIRM_ATR_MIN_EQ
         if atrp < max(1e-9, atr_min * NUDGE_MIN_ATR_FRAC):
             return outcome
 
@@ -1018,6 +1028,15 @@ def _log_decision_metric(
         f"final_outcome={final_outcome or 'HOLD'} blocked_by={blocked_by or '-'} "
         f"order_result={order_result or '-'} realized_pnl={realized_pnl:.2f}"
     )
+    try:
+        if _supervisor is not None:
+            _supervisor.record_metric(
+                is_fx=is_forex(symbol),
+                blocked_by=blocked_by,
+                order_result=order_result,
+            )
+    except Exception:
+        pass
 
 
 def _pick_risk_multiplier(drawdown_frac: float, pnl_frac: float) -> Tuple[float, str]:
@@ -1066,7 +1085,7 @@ def _refresh_dynamic_risk(mt5_eq: float, t212_eq: float) -> None:
         fx_mult, fx_profile = _pick_risk_multiplier(fx_dd, fx_pnl_frac)
     else:
         fx_mult, fx_profile = 1.0, "BASE"
-    _fx_risk_frac_live = base_fx * fx_mult
+    _fx_risk_frac_live = base_fx * fx_mult * max(0.25, float(_supervisor_fx_risk_mult or 1.0))
 
     # Equity profile
     if t212_eq > 0 and (_eq_risk_ref_eq or 0) > 0:
@@ -1076,7 +1095,7 @@ def _refresh_dynamic_risk(mt5_eq: float, t212_eq: float) -> None:
         eq_mult, eq_profile = _pick_risk_multiplier(eq_dd, eq_pnl_frac)
     else:
         eq_mult, eq_profile = 1.0, "BASE"
-    _eq_risk_frac_live = base_eq * eq_mult
+    _eq_risk_frac_live = base_eq * eq_mult * max(0.25, float(_supervisor_eq_risk_mult or 1.0))
 
     # Log only when profile changes to avoid noise.
     if fx_profile != _last_risk_profile_fx:
@@ -1229,6 +1248,9 @@ def _reconcile_live_positions(all_symbols: List[str], *, reason: str = "cycle") 
 # Main loop
 # =============================================================================
 def run_live_trading():
+    global _supervisor
+    global _max_acceptable_uncertainty_live, _preconfirm_atr_min_fx_live, _preconfirm_grace_bps_fx_live
+    global _supervisor_fx_risk_mult, _supervisor_eq_risk_mult
     print("\n==================================================")
     print(f"Starting trading cycle ({'AI' if USE_META_DECIDER else 'classic'}) with {ACTIVE_STRATEGY} default")
     all_symbols = list(FOREX_SYMBOLS) + list(INSTRUMENTS)
@@ -1247,6 +1269,19 @@ def run_live_trading():
         f"mult(soft/hard/up)=({AUTO_RISK_MULT_SOFT:.2f}/{AUTO_RISK_MULT_HARD:.2f}/{AUTO_RISK_MULT_UP:.2f})"
     )
     print("==================================================\n")
+
+    if SUPERVISOR_ENABLED:
+        _supervisor = AutonomousSupervisor(
+            max_uncertainty=_max_acceptable_uncertainty_live,
+            atr_min_fx=_preconfirm_atr_min_fx_live,
+            grace_bps_fx=_preconfirm_grace_bps_fx_live,
+            tune_every_cycles=SUPERVISOR_TUNE_EVERY_CYCLES,
+        )
+        print(
+            f"[SUPERVISOR] enabled=1 tune_every={SUPERVISOR_TUNE_EVERY_CYCLES} "
+            f"| fx_atr_min={_preconfirm_atr_min_fx_live} fx_grace_bps={_preconfirm_grace_bps_fx_live} "
+            f"| uncertainty={_max_acceptable_uncertainty_live:.2f}"
+        )
 
     # One-time T212 probe & reconciliation (single portfolio fetch to avoid 429 at startup)
     try:
@@ -1394,12 +1429,12 @@ def run_live_trading():
                                 print(f"[AI-ARM] {symbol}: {prev_arm or '-'} → {decision_strategy}")
                                 _last_ai_arm[symbol] = decision_strategy
 
-                            if decision_strategy == "HOLD" or decision_uncertainty > MAX_ACCEPTABLE_UNCERTAINTY:
+                            if decision_strategy == "HOLD" or decision_uncertainty > _max_acceptable_uncertainty_live:
                                 fallback = analyze_sma(symbol)
                                 if fallback and fallback != "HOLD":
                                     outcome = fallback
                                     print(f"[AI-FALLBACK] {symbol}: using SMA due to "
-                                          f"{'strategy=HOLD' if decision_strategy=='HOLD' else f'uncertainty {decision_uncertainty:.2f} > {MAX_ACCEPTABLE_UNCERTAINTY:.2f}'} ⇒ {outcome}")
+                                          f"{'strategy=HOLD' if decision_strategy=='HOLD' else f'uncertainty {decision_uncertainty:.2f} > {_max_acceptable_uncertainty_live:.2f}'} ⇒ {outcome}")
                                     decision_action = "SMA_conservative"
                                     decision_strategy = "SMA"
                                     decision_params = {"note": "fallback"}
@@ -1678,6 +1713,29 @@ def run_live_trading():
                 _profit_guard_run(all_symbols, latest_outcomes, meta=meta)
             except Exception as e:
                 print(f"[PG] skipped this cycle: {e}")
+
+            if SUPERVISOR_ENABLED and _supervisor is not None:
+                try:
+                    mt5_eq_for_supervisor = float(mt5_get_equity() or 0.0)
+                    pnl_fx_now = float(get_today_pnl_fx() or 0.0)
+                    ov = _supervisor.on_cycle_end(
+                        mt5_eq=mt5_eq_for_supervisor,
+                        pnl_fx=pnl_fx_now,
+                        halted_fx=is_trading_halted_fx(),
+                    )
+                    if ov is not None:
+                        _max_acceptable_uncertainty_live = float(ov.max_uncertainty)
+                        _preconfirm_atr_min_fx_live = float(ov.atr_min_fx)
+                        _preconfirm_grace_bps_fx_live = float(ov.grace_bps_fx)
+                        _supervisor_fx_risk_mult = float(ov.fx_risk_mult)
+                        _supervisor_eq_risk_mult = float(ov.eq_risk_mult)
+                        print(
+                            f"[SUPERVISOR] uncertainty={_max_acceptable_uncertainty_live:.2f} "
+                            f"fx_atr_min={_preconfirm_atr_min_fx_live:.5f} fx_grace_bps={_preconfirm_grace_bps_fx_live:.1f} "
+                            f"risk_mult_fx={_supervisor_fx_risk_mult:.2f}"
+                        )
+                except Exception as se:
+                    print(f"[SUPERVISOR] skipped this cycle: {se}")
 
             time.sleep(3)
     except KeyboardInterrupt:
