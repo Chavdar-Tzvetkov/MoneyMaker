@@ -31,6 +31,23 @@ REM Live mode: AI + LLM. Override in .env or here for classic (USE_META_DECIDER=
 set "USE_META_DECIDER=1"
 set "LLM_ENABLED=0"
 
+REM FX execution tuning (reduce over-filtering that causes zero MT5 trades)
+REM Keep safety checks enabled, but relax thresholds so valid setups can pass.
+set "MAX_ACCEPTABLE_UNCERTAINTY=1.00"
+set "PRECONFIRM_ATR_MIN_FX=0.00012"
+set "PRECONFIRM_GRACE_BPS_FX=80"
+set "DECISIVE_MODE_FX=1"
+
+REM Autonomous live-safe profile (cross-account)
+set "CIRCUIT_BREAKER_ENABLED=1"
+set "CIRCUIT_BREAKER_HALT_MINUTES=90"
+set "MAX_CONCURRENT_FOREX=2"
+set "MAX_TRADES_PER_HOUR=3"
+set "EQUITY_MAX_TRADES_PER_HOUR=2"
+set "FX_RISK_PER_TRADE_FRAC=0.00035"
+set "EQ_RISK_PER_TRADE_FRAC=0.0015"
+set "PG_REQUIRE_NOT_BUY=1"
+
 REM Optional: set in .env to avoid 429 and fix circuit breaker to your budgets (e.g. REFERENCE_EQUITY_MT5=9500 REFERENCE_EQUITY_T212=4200)
 REM Optional: clear circuit breaker on start once (CLEAR_HALT_ON_START=1) or relax threshold (CIRCUIT_BREAKER_HALT_THRESHOLD=-0.35)
 

@@ -11,6 +11,7 @@ from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta
 import os, re
 import MetaTrader5 as mt5
+import pandas as pd
 from dotenv import load_dotenv
 from utils.symbols import normalize_symbol
 from services.pnl_service import record_fx_close_profit
@@ -22,6 +23,7 @@ load_dotenv()
 # if close handling is retried or invoked from multiple call sites, or
 # when we also reconcile from history in the live loop.
 _logged_deal_ids: set[int] = set()
+MM_MAGIC = int(os.getenv("MM_MAGIC", "606060"))
 
 # ---------- connection ----------
 def initialize_mt5() -> bool:
@@ -205,8 +207,9 @@ def sync_new_mm_deals_to_pnl(window_hours: int = 24) -> None:
 
         for d in deals:
             comment = (getattr(d, "comment", "") or "").strip()
-            if not comment.startswith("MM "):
-                # Ignore trades not initiated by this bot.
+            magic = int(getattr(d, "magic", 0) or 0)
+            # Prefer explicit bot magic; keep comment-prefix fallback for backward compatibility.
+            if magic != MM_MAGIC and not comment.startswith("MM "):
                 continue
 
             if entry_filter_enabled:
@@ -237,6 +240,68 @@ def get_current_price(symbol: str) -> Optional[float]:
 
 def get_live_tick(symbol: str) -> Optional[Any]:
     return mt5.symbol_info_tick(normalize_symbol(symbol))
+
+def _timeframe_from_interval(interval: str) -> Optional[int]:
+    key = (interval or "").strip().lower()
+    mapping = {
+        "1m": mt5.TIMEFRAME_M1,
+        "2m": mt5.TIMEFRAME_M2,
+        "3m": mt5.TIMEFRAME_M3,
+        "4m": mt5.TIMEFRAME_M4,
+        "5m": mt5.TIMEFRAME_M5,
+        "6m": mt5.TIMEFRAME_M6,
+        "10m": mt5.TIMEFRAME_M10,
+        "12m": mt5.TIMEFRAME_M12,
+        "15m": mt5.TIMEFRAME_M15,
+        "20m": mt5.TIMEFRAME_M20,
+        "30m": mt5.TIMEFRAME_M30,
+        "1h": mt5.TIMEFRAME_H1,
+        "2h": mt5.TIMEFRAME_H2,
+        "3h": mt5.TIMEFRAME_H3,
+        "4h": mt5.TIMEFRAME_H4,
+        "6h": mt5.TIMEFRAME_H6,
+        "8h": mt5.TIMEFRAME_H8,
+        "12h": mt5.TIMEFRAME_H12,
+        "1d": mt5.TIMEFRAME_D1,
+    }
+    return mapping.get(key)
+
+def get_recent_bars(
+    symbol: str,
+    bars: int | None = None,
+    lookback_days: int | None = None,
+    interval: str = "5m",
+) -> Optional[pd.DataFrame]:
+    """
+    Fetch recent OHLC bars from MT5 as a pandas DataFrame.
+    Returns columns: time, open, high, low, close, tick_volume, spread, real_volume.
+    """
+    sym = normalize_symbol(symbol)
+    tf = _timeframe_from_interval(interval)
+    if tf is None:
+        return None
+    ok, _ = _ensure_symbol_ready(sym)
+    if not ok:
+        return None
+
+    count = int(bars or 0)
+    if count <= 0:
+        days = max(1, int(lookback_days or 2))
+        # rough fallback (enough for indicators + guards)
+        if interval.endswith("m"):
+            count = max(200, int(days * 24 * 60 / max(1, int(interval[:-1]))))
+        elif interval.endswith("h"):
+            count = max(200, int(days * 24 / max(1, int(interval[:-1]))))
+        else:
+            count = max(200, days)
+
+    rates = mt5.copy_rates_from_pos(sym, tf, 0, count)
+    if rates is None or len(rates) == 0:
+        return None
+    df = pd.DataFrame(rates)
+    if df.empty:
+        return None
+    return df
 
 def get_position(symbol: str) -> Optional[Dict[str, Any]]:
     sym = normalize_symbol(symbol)
@@ -333,6 +398,7 @@ def place_market_order(symbol: str, quantity: float, tp_pct: float | None = None
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": fill_mode,
             "comment": _safe_comment(f"MM {side}"),
+            "magic": MM_MAGIC,
         }
         if tp_price is not None:
             request["tp"] = tp_price
@@ -383,6 +449,7 @@ def close_position_market(symbol: str) -> Tuple[bool, str, float]:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": fill_mode,
             "comment": _safe_comment("MM CLOSE"),
+            "magic": MM_MAGIC,
         }
         result = mt5.order_send(request)
         if result is None:

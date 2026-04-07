@@ -106,7 +106,7 @@ MAX_FX_LOTS_PER_ORDER    = float(os.getenv("MAX_FX_LOTS_PER_ORDER", "0.35"))
 # ----- Equity software stops & trailing (managed by the bot on T212) -----
 EQUITY_STOPS_ENABLED             = True     # master enable for software stops on stocks
 EQUITY_TAKE_PROFIT_PERCENT       = float(os.getenv("EQUITY_TAKE_PROFIT_PERCENT", "0.015"))   # +1.5% TP (wider so positions can run)
-EQUITY_STOP_LOSS_PERCENT         = -0.0150  # −1.50% SL
+EQUITY_STOP_LOSS_PERCENT         = float(os.getenv("EQUITY_STOP_LOSS_PERCENT", "-0.015"))  # −1.50% SL
 EQUITY_TRAILING_ENABLED          = True
 EQUITY_TRAILING_DISTANCE_PCT     = 0.0150   # 1.5% trail distance (wider)
 EQUITY_TRAILING_STEP_PCT         = 0.0050   # update when improved by 0.5%

@@ -129,7 +129,12 @@ def _halt_active_fx() -> bool:
     if _last_pnl_date is not None and _last_pnl_date != today:
         _clear_halt_fx()
         _last_pnl_date = today
-    return _halt_until_utc_fx is not None and now < _halt_until_utc_fx
+    if _halt_until_utc_fx is None:
+        return False
+    if now >= _halt_until_utc_fx:
+        _clear_halt_fx()
+        return False
+    return True
 
 
 def _halt_active_equity() -> bool:
@@ -141,7 +146,12 @@ def _halt_active_equity() -> bool:
     if _last_pnl_date is not None and _last_pnl_date != today:
         _clear_halt_equity()
         _last_pnl_date = today
-    return _halt_until_utc_equity is not None and now < _halt_until_utc_equity
+    if _halt_until_utc_equity is None:
+        return False
+    if now >= _halt_until_utc_equity:
+        _clear_halt_equity()
+        return False
+    return True
 
 
 def is_trading_halted(symbol: Optional[str] = None) -> bool:
@@ -251,9 +261,6 @@ def switch_strategy_if_needed(
                     f"of {mt5_eq:.0f} (limit {-fx_daily_loss_frac*100:.1f}%) → halting FX {HALT_MINUTES} min"
                 )
                 _trip_halt_fx(HALT_MINUTES)
-        else:
-            if _halt_active_fx():
-                _clear_halt_fx()
 
     # 2) Equity circuit breaker (T212 account only)
     t212_eq = float(t212_equity or 0.0) if t212_equity is not None else 0.0
@@ -266,9 +273,6 @@ def switch_strategy_if_needed(
                     f"of {t212_eq:.0f} (limit {-eq_daily_loss_frac*100:.1f}%) → halting equity {HALT_MINUTES} min"
                 )
                 _trip_halt_equity(HALT_MINUTES)
-        else:
-            if _halt_active_equity():
-                _clear_halt_equity()
 
     # 3) Strategy switching (SMA/SCALPING) uses combined PnL and combined equity
     combined_eq = mt5_eq + t212_eq

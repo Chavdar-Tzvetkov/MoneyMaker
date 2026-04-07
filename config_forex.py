@@ -15,7 +15,7 @@ FOREX_REDUCED_RISK_SYMBOLS = [s.strip() for s in os.getenv(
 FOREX_REDUCED_RISK_MULT = float(os.getenv("FOREX_REDUCED_RISK_MULT", "0.5"))
 
 # Enforce broker session trading instead of fixed windows
-USE_BROKER_SESSIONS = False
+USE_BROKER_SESSIONS = os.getenv("USE_BROKER_SESSIONS", "1").strip().lower() in ("1", "true", "yes")
 
 # Risk/Reward enforcement
 # Reasonable default; override via .env if you want stricter filters.
@@ -29,4 +29,4 @@ MIN_PROGRESS_R = float(os.getenv("MIN_PROGRESS_R", "0.35"))  # need a bit more p
 MAX_CONCURRENT_FOREX = int(os.getenv("MAX_CONCURRENT_FOREX", "5"))
 
 # Optional: close all forex positions when broker session ends
-FORCE_FLAT_AT_SESSION_END = False
+FORCE_FLAT_AT_SESSION_END = os.getenv("FORCE_FLAT_AT_SESSION_END", "0").strip().lower() in ("1", "true", "yes")

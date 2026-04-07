@@ -137,6 +137,8 @@ LLM_MIN_CONF = float(os.getenv("LLM_MIN_CONF", "0.65"))
 USE_META_DECIDER = bool(int(os.getenv("USE_META_DECIDER", "1")))
 MAX_TRADES_PER_HOUR = int(os.getenv("MAX_TRADES_PER_HOUR", str(RATE_LIMIT.get("MAX_TRADES_PER_HOUR", 5))))
 MAX_ACCEPTABLE_UNCERTAINTY = float(os.getenv("MAX_ACCEPTABLE_UNCERTAINTY", "0.95"))
+# Small shaping weight for per-bar bandit updates; realized close-PnL remains primary.
+AI_STEP_REWARD_WEIGHT = float(os.getenv("AI_STEP_REWARD_WEIGHT", "0.10"))
 
 # Bar interval for AI context
 AI_BAR_INTERVAL = os.getenv("AI_BAR_INTERVAL", "5m")
@@ -316,7 +318,12 @@ def _run_zscore(symbol: str, params: dict) -> Optional[str]:
     )
 
 STRATEGY_RUNNERS: Dict[str, Callable[[str, Dict[str, Any]], Optional[str]]] = {
-    "SMA":       lambda s, p: analyze_sma(s),
+    "SMA":       lambda s, p: analyze_sma(
+        s,
+        fast=int(p.get("fast")) if p.get("fast") is not None else None,
+        slow=int(p.get("slow")) if p.get("slow") is not None else None,
+        hold_band=float(p.get("hold_band")) if p.get("hold_band") is not None else None,
+    ),
     "SCALPING":  lambda s, p: analyze_scalping(s),
     "SCALP":     lambda s, p: analyze_scalping(s),
     "RSI_MR":    _run_rsi,
@@ -330,6 +337,7 @@ STRATEGY_RUNNERS: Dict[str, Callable[[str, Dict[str, Any]], Optional[str]]] = {
     "ZSCORE":    _run_zscore,
     "HOLD":      lambda _s, _p: "HOLD",
 }
+MR_STRATEGIES = {"RSI_MR", "RANGE_MR", "ZSCORE", "BOLLINGER"}
 
 # =============================================================================
 # Routing and helpers
@@ -753,7 +761,7 @@ def _estimate_reward(df, outcome: Optional[str]) -> float:
         return 0.0
 
 # --------------------------- Pre-trade confirmation --------------------------
-def _pretrade_filter(symbol: str, outcome: Optional[str], df=None) -> Optional[str]:
+def _pretrade_filter(symbol: str, outcome: Optional[str], df=None, strategy_name: str | None = None) -> Optional[str]:
     if outcome not in ("BUY", "SELL"):
         return outcome
 
@@ -798,8 +806,17 @@ def _pretrade_filter(symbol: str, outcome: Optional[str], df=None) -> Optional[s
         grace_bps = PRECONFIRM_GRACE_BPS_FX if is_forex(symbol) else PRECONFIRM_GRACE_BPS_EQ
         grace = (price * grace_bps) / 10000.0
 
+        strat = (strategy_name or "").upper()
+        mr_mode = strat in MR_STRATEGIES
+
         strict = PRECONFIRM_STRICT_FX if is_forex(symbol) else PRECONFIRM_STRICT_EQ
-        if strict:
+        if mr_mode:
+            # Mean-reversion arms should not be vetoed by trend-only MA stacking.
+            # Keep volatility/risk checks above, then use a light distance sanity bound.
+            max_dist = max(grace * 3.0, price * 0.02)
+            ok_buy = (sma20 - price) <= max_dist
+            ok_sell = (price - sma20) <= max_dist
+        elif strict:
             ok_buy  = (price > sma20 > sma50)
             ok_sell = (price < sma20 < sma50)
         else:
@@ -984,6 +1001,25 @@ def _feed_close_reward(meta, symbol: str, realized_pnl: float, is_fx: bool) -> N
         print(f"[AI REWARD] skip feed for {symbol}: {e}")
 
 
+def _log_decision_metric(
+    symbol: str,
+    *,
+    strategy: str,
+    final_outcome: str,
+    blocked_by: str = "",
+    order_result: str = "",
+    realized_pnl: float = 0.0,
+) -> None:
+    """
+    Structured decision telemetry for post-run analysis.
+    """
+    print(
+        f"[DECISION_METRIC] symbol={symbol} strategy={strategy or 'N/A'} "
+        f"final_outcome={final_outcome or 'HOLD'} blocked_by={blocked_by or '-'} "
+        f"order_result={order_result or '-'} realized_pnl={realized_pnl:.2f}"
+    )
+
+
 def _pick_risk_multiplier(drawdown_frac: float, pnl_frac: float) -> Tuple[float, str]:
     if drawdown_frac >= AUTO_RISK_DD_HARD:
         return max(0.0, AUTO_RISK_MULT_HARD), "DEFENSIVE_HARD"
@@ -1138,6 +1174,19 @@ def _current_position_qty(symbol: str) -> float:
     else:
         return float(get_equity_position_qty(symbol) or 0.0)
 
+def _is_risk_on_order(symbol: str, outcome: str, cur_qty: float) -> bool:
+    """
+    True when an action increases gross exposure for the account.
+    Used to fail-safe when account equity source is unavailable.
+    """
+    if outcome not in ("BUY", "SELL"):
+        return False
+    if is_forex(symbol):
+        # FX BUY/SELL path can open/flip and therefore add fresh risk.
+        return True
+    # Equities: BUY increases exposure, SELL reduces existing long.
+    return outcome == "BUY"
+
 
 def _reconcile_live_positions(all_symbols: List[str], *, reason: str = "cycle") -> None:
     """
@@ -1153,6 +1202,14 @@ def _reconcile_live_positions(all_symbols: List[str], *, reason: str = "cycle") 
 
             if abs(live_qty - db_qty) > 1e-9:
                 print(f"[RECON:{reason}] {symbol}: DB={db_qty} → LIVE={live_qty} — syncing.")
+                # If a live equity position vanished outside normal close flow,
+                # best-effort realize PnL so halts/sizing use truthful daily PnL.
+                if not is_forex(symbol) and db_qty > 0.0 and live_qty == 0.0 and db_pos:
+                    entry = float(getattr(db_pos, "average_price", 0.0) or 0.0)
+                    exit_px = _route_get_price(symbol) or entry
+                    if entry > 0.0 and exit_px > 0.0:
+                        realized = record_equity_close(symbol, entry, exit_px, db_qty)
+                        print(f"[RECON:{reason}] {symbol}: booked external equity close PnL={realized:.2f}")
                 price = 0.0 if live_qty == 0.0 else (_route_get_price(symbol) or 0.0)
                 db_update_position(key, live_qty, price, overwrite=True)
 
@@ -1240,27 +1297,36 @@ def run_live_trading():
             _reconcile_live_positions(all_symbols, reason="cycle")
 
             # Strategy switcher: separate MT5 and T212 (per-account circuit breakers)
+            mt5_eq = 0.0
+            t212_eq = 0.0
+            mt5_eq_valid = False
+            t212_eq_valid = False
             try:
-                mt5_eq = float(REFERENCE_EQUITY_MT5) if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0 else None
-                if mt5_eq is None:
+                if REFERENCE_EQUITY_MT5 and REFERENCE_EQUITY_MT5 > 0:
+                    mt5_eq = float(REFERENCE_EQUITY_MT5)
+                    mt5_eq_valid = True
+                else:
                     e = mt5_get_equity()
                     mt5_eq = float(e or 0.0) if e is not None else 0.0
-                t212_eq = float(REFERENCE_EQUITY_T212) if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0 else None
-                if t212_eq is None:
-                    try:
-                        info = get_account_info() or {}
-                        t212_eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 0.0)
-                    except Exception:
-                        t212_eq = 0.0
-                if mt5_eq <= 0:
-                    mt5_eq = 5000.0
-                if t212_eq <= 0:
-                    t212_eq = 5000.0
-            except Exception:
-                mt5_eq = 5000.0
-                t212_eq = 5000.0
-            switch_strategy_if_needed(mt5_equity=mt5_eq, t212_equity=t212_eq)
-            _refresh_dynamic_risk(mt5_eq=mt5_eq, t212_eq=t212_eq)
+                    mt5_eq_valid = mt5_eq > 0.0
+
+                if REFERENCE_EQUITY_T212 and REFERENCE_EQUITY_T212 > 0:
+                    t212_eq = float(REFERENCE_EQUITY_T212)
+                    t212_eq_valid = True
+                else:
+                    info = get_account_info() or {}
+                    t212_eq = float(info.get("totalValue") or info.get("investedValue") or info.get("freeCash") or 0.0)
+                    t212_eq_valid = t212_eq > 0.0
+            except Exception as eq_err:
+                print(f"[EQUITY SOURCE] failed to refresh account equity: {eq_err}")
+
+            if not mt5_eq_valid:
+                print("[SAFEGUARD] MT5 equity unavailable -> new FX risk-on orders blocked this cycle.")
+            if not t212_eq_valid:
+                print("[SAFEGUARD] T212 equity unavailable -> new equity risk-on orders blocked this cycle.")
+
+            switch_strategy_if_needed(mt5_equity=mt5_eq if mt5_eq_valid else 0.0, t212_equity=t212_eq if t212_eq_valid else 0.0)
+            _refresh_dynamic_risk(mt5_eq=mt5_eq if mt5_eq_valid else 0.0, t212_eq=t212_eq if t212_eq_valid else 0.0)
 
             # --------------------------- Trading pass --------------------------
             latest_outcomes: Dict[str, str] = {}
@@ -1270,15 +1336,18 @@ def run_live_trading():
                     # Per-account circuit breaker: skip FX if MT5 halted, skip equity if T212 halted.
                     if is_trading_halted(symbol):
                         latest_outcomes[symbol] = "HOLD"
+                        _log_decision_metric(symbol, strategy="HALT_GUARD", final_outcome="HOLD", blocked_by="circuit_breaker")
                         continue
 
                     if not is_market_open(symbol):
                         latest_outcomes[symbol] = "HOLD"
+                        _log_decision_metric(symbol, strategy="MARKET_GUARD", final_outcome="HOLD", blocked_by="market_closed")
                         continue
 
                     price = _route_get_price(symbol)
                     if price is None:
                         latest_outcomes[symbol] = "HOLD"
+                        _log_decision_metric(symbol, strategy="PRICE_GUARD", final_outcome="HOLD", blocked_by="no_price")
                         continue
 
                     # Manage stops/trailing
@@ -1341,7 +1410,8 @@ def run_live_trading():
                                 outcome = runner(symbol, decision_params)
 
                             reward = _estimate_reward(df, outcome)
-                            meta.learn(df, decision_action, reward, symbol=symbol)
+                            if AI_STEP_REWARD_WEIGHT > 0.0 and decision_action:
+                                meta.learn(df, decision_action, reward * AI_STEP_REWARD_WEIGHT, symbol=symbol)
 
                             print(f"[AI] {symbol} → strat={decision_strategy} params={decision_params} u={decision_uncertainty:.2f} ⇒ {outcome}")
                     else:
@@ -1351,7 +1421,7 @@ def run_live_trading():
                         decision_params = {}
 
                     # Pre-trade filter
-                    outcome = _pretrade_filter(symbol, outcome, df)
+                    outcome = _pretrade_filter(symbol, outcome, df, strategy_name=decision_strategy)
 
                     # LLM tie-break / veto / primary
                     if LLM_ENABLED:
@@ -1396,6 +1466,12 @@ def run_live_trading():
 
                     if not outcome or outcome == "HOLD":
                         _equity_sell_streak.pop(normalize_symbol(symbol), None)
+                        _log_decision_metric(
+                            symbol,
+                            strategy=decision_strategy or ACTIVE_STRATEGY,
+                            final_outcome="HOLD",
+                            blocked_by="model_or_filters",
+                        )
                         sma_trend = analyze_sma(symbol) if is_forex(symbol) else None
                         _maybe_hedge_fx(symbol, sma_trend)
                         continue
@@ -1403,6 +1479,26 @@ def run_live_trading():
                     cur_qty = _current_position_qty(symbol)
                     qty = _compute_risk_based_quantity(symbol, price)
                     key = normalize_symbol(symbol)
+
+                    if _is_risk_on_order(symbol, outcome, cur_qty):
+                        if is_forex(symbol) and not mt5_eq_valid:
+                            print(f"[SAFEGUARD] {symbol}: skip {outcome} (MT5 equity source unavailable)")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="HOLD",
+                                blocked_by="mt5_equity_unavailable",
+                            )
+                            continue
+                        if (not is_forex(symbol)) and not t212_eq_valid:
+                            print(f"[SAFEGUARD] {symbol}: skip {outcome} (T212 equity source unavailable)")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="HOLD",
+                                blocked_by="t212_equity_unavailable",
+                            )
+                            continue
 
                     db_pos = db_get_position(key)
                     db_qty = float(db_pos.quantity) if db_pos else 0.0
@@ -1413,17 +1509,35 @@ def run_live_trading():
                     if MAX_POSITIONS_PER_SYMBOL > 0:
                         if outcome == "BUY" and cur_qty > 0.0:
                             print(f"[IN-POSITION] {symbol}: already long {cur_qty}, skipping buy.")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="HOLD",
+                                blocked_by="already_long",
+                            )
                             sma_trend = analyze_sma(symbol) if is_forex(symbol) else None
                             _maybe_hedge_fx(symbol, sma_trend)
                             continue
                         if outcome == "SELL" and cur_qty < 0.0:
                             print(f"[IN-POSITION] {symbol}: already short {cur_qty}, skipping sell.")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="HOLD",
+                                blocked_by="already_short",
+                            )
                             sma_trend = analyze_sma(symbol) if is_forex(symbol) else None
                             _maybe_hedge_fx(symbol, sma_trend)
                             continue
 
                     if not _rate_limit_ok(key):
                         print(f"[RATE] {symbol}: trades/hour limit reached, holding.")
+                        _log_decision_metric(
+                            symbol,
+                            strategy=decision_strategy or ACTIVE_STRATEGY,
+                            final_outcome="HOLD",
+                            blocked_by="rate_limit",
+                        )
                         sma_trend = analyze_sma(symbol) if is_forex(symbol) else None
                         _maybe_hedge_fx(symbol, sma_trend)
                         continue
@@ -1431,6 +1545,12 @@ def run_live_trading():
                     side = "LONG" if outcome == "BUY" else "SHORT"
                     if not _can_reenter(key, side, price):
                         print(f"[REENTRY] {symbol}: blocked (cooldown/distance).")
+                        _log_decision_metric(
+                            symbol,
+                            strategy=decision_strategy or ACTIVE_STRATEGY,
+                            final_outcome="HOLD",
+                            blocked_by="reentry_gate",
+                        )
                         sma_trend = analyze_sma(symbol) if is_forex(symbol) else None
                         _maybe_hedge_fx(symbol, sma_trend)
                         continue
@@ -1449,6 +1569,12 @@ def run_live_trading():
                                         _feed_close_reward(meta, symbol, realized_fx, is_fx=True)
                             ok, info = _route_open(symbol, qty)
                             print(f"[ORDER] {symbol}: {info}")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="BUY",
+                                order_result=info,
+                            )
                             if ok:
                                 _last_open_action[key] = decision_action or "CLASSIC"
                                 _rate_mark(key)
@@ -1457,6 +1583,12 @@ def run_live_trading():
                         else:
                             ok, info = _route_open(symbol, qty)
                             print(f"[ORDER] {symbol}: {info}")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="BUY",
+                                order_result=info,
+                            )
                             if ok:
                                 _last_open_action[key] = decision_action or "CLASSIC"
                                 _equity_position_open_ts[key] = time.time()
@@ -1478,6 +1610,12 @@ def run_live_trading():
                                         _feed_close_reward(meta, symbol, realized_fx, is_fx=True)
                             ok, info = _route_open(symbol, -qty)
                             print(f"[ORDER] {symbol}: {info}")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="SELL",
+                                order_result=info,
+                            )
                             if ok:
                                 _last_open_action[key] = decision_action or "CLASSIC"
                                 _rate_mark(key)
@@ -1487,17 +1625,35 @@ def run_live_trading():
                             # Stocks: SELL == sell-to-close (no shorting). Require N consecutive SELL signals.
                             if cur_qty <= 0.0:
                                 print("[EQUITY] Short selling blocked or no holdings to reduce.")
+                                _log_decision_metric(
+                                    symbol,
+                                    strategy=decision_strategy or ACTIVE_STRATEGY,
+                                    final_outcome="HOLD",
+                                    blocked_by="equity_no_holdings_to_sell",
+                                )
                                 _equity_sell_streak.pop(key, None)
                                 continue
                             streak = _equity_sell_streak.get(key, 0) + 1
                             _equity_sell_streak[key] = streak
                             if streak < EQUITY_SELL_CONFIRM_CYCLES:
                                 print(f"[EQUITY SELL CONFIRM] {symbol}: need {EQUITY_SELL_CONFIRM_CYCLES} SELLs, have {streak} — holding.")
+                                _log_decision_metric(
+                                    symbol,
+                                    strategy=decision_strategy or ACTIVE_STRATEGY,
+                                    final_outcome="HOLD",
+                                    blocked_by="equity_sell_confirm",
+                                )
                                 continue
                             sell_qty = cur_qty
                             entry = float(getattr(db_pos, "avg_price", 0.0) or 0.0)
                             ok, info = _route_open(symbol, -sell_qty)
                             print(f"[EQUITY CLOSE] {symbol}: {info}")
+                            _log_decision_metric(
+                                symbol,
+                                strategy=decision_strategy or ACTIVE_STRATEGY,
+                                final_outcome="SELL",
+                                order_result=info,
+                            )
                             if ok:
                                 _equity_sell_streak.pop(key, None)
                                 _equity_position_open_ts.pop(key, None)
