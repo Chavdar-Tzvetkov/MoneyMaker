@@ -1138,6 +1138,36 @@ def _current_position_qty(symbol: str) -> float:
     else:
         return float(get_equity_position_qty(symbol) or 0.0)
 
+
+def _reconcile_live_positions(all_symbols: List[str], *, reason: str = "cycle") -> None:
+    """
+    Reconcile DB position rows with broker/live quantities.
+    Runs each cycle and once again during shutdown to avoid stale OPEN rows.
+    """
+    for symbol in all_symbols:
+        try:
+            key = normalize_symbol(symbol)
+            live_qty = _current_position_qty(symbol)
+            db_pos = db_get_position(key)
+            db_qty = float(db_pos.quantity) if db_pos else 0.0
+
+            if abs(live_qty - db_qty) > 1e-9:
+                print(f"[RECON:{reason}] {symbol}: DB={db_qty} → LIVE={live_qty} — syncing.")
+                price = 0.0 if live_qty == 0.0 else (_route_get_price(symbol) or 0.0)
+                db_update_position(key, live_qty, price, overwrite=True)
+
+                if live_qty == 0.0:
+                    had_state = key in _last_entry or key in _equity_position_open_ts or key in _equity_sell_streak
+                    _last_entry.pop(key, None)
+                    _eq_trail_sl.pop(symbol, None)
+                    _equity_position_open_ts.pop(key, None)
+                    _equity_position_open_ts.pop(symbol, None)
+                    _equity_sell_streak.pop(key, None)
+                    if had_state:
+                        print(f"[RECON:{reason}] {symbol}: flat → cooldown/equity state cleared.")
+        except Exception as rec_err:
+            print(f"[RECON:{reason} ERROR] {symbol}: {rec_err}")
+
 # =============================================================================
 # Main loop
 # =============================================================================
@@ -1196,8 +1226,8 @@ def run_live_trading():
         flip_cooldown_sec=int(os.getenv("AI_FLIP_COOLDOWN_SEC", "60")),
     )
 
-    while True:
-        try:
+    try:
+        while True:
             # Ensure any new MM-tagged MT5 deals (including SL/TP or manual closes)
             # are reflected in DailyPnL even if they didn't go through the explicit
             # close_position_market() path.
@@ -1207,29 +1237,7 @@ def run_live_trading():
                 print(f"[MT5 PNL SYNC] skipped this cycle: {e}")
 
             # --------------------------- Auto-reconciliation -------------------
-            for symbol in all_symbols:
-                try:
-                    key = normalize_symbol(symbol)
-                    live_qty = _current_position_qty(symbol)
-                    db_pos = db_get_position(key)
-                    db_qty = float(db_pos.quantity) if db_pos else 0.0
-
-                    if live_qty != db_qty:
-                        print(f"[RECON] {symbol}: DB={db_qty} → LIVE={live_qty} — syncing.")
-                        price = 0.0 if live_qty == 0.0 else (_route_get_price(symbol) or 0.0)
-                        db_update_position(key, live_qty, price, overwrite=True)
-
-                        if live_qty == 0.0:
-                            had_state = key in _last_entry or key in _equity_position_open_ts or key in _equity_sell_streak
-                            _last_entry.pop(key, None)
-                            _eq_trail_sl.pop(symbol, None)
-                            _equity_position_open_ts.pop(key, None)
-                            _equity_position_open_ts.pop(symbol, None)
-                            _equity_sell_streak.pop(key, None)
-                            if had_state:
-                                print(f"[RECON] {symbol}: flat → cooldown/equity state cleared.")
-                except Exception as rec_err:
-                    print(f"[RECON ERROR] {symbol}: {rec_err}")
+            _reconcile_live_positions(all_symbols, reason="cycle")
 
             # Strategy switcher: separate MT5 and T212 (per-account circuit breakers)
             try:
@@ -1516,10 +1524,15 @@ def run_live_trading():
                 print(f"[PG] skipped this cycle: {e}")
 
             time.sleep(3)
-
-        except KeyboardInterrupt:
-            print("\n[STOP] Keyboard interrupt received. Exiting loop.")
-            break
+    except KeyboardInterrupt:
+        print("\n[STOP] Keyboard interrupt received. Exiting loop.")
+    except Exception as e:
+        print(f"[FATAL LOOP ERROR] {e}")
+    finally:
+        # Final best-effort sync to avoid stale DB positions after manual stop.
+        print("[SHUTDOWN] Running final MT5/DB reconciliation...")
+        try:
+            mt5_sync_mm_deals_to_pnl()
         except Exception as e:
-            print(f"[FATAL LOOP ERROR] {e}")
-            time.sleep(5)
+            print(f"[SHUTDOWN] MT5 PnL sync failed: {e}")
+        _reconcile_live_positions(all_symbols, reason="shutdown")
