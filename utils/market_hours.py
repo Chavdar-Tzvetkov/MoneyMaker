@@ -5,6 +5,7 @@ Respects official holidays and early-close days for both markets.
 """
 from __future__ import annotations
 from datetime import datetime, time
+
 import pytz
 
 from utils.market_calendar import (
@@ -60,6 +61,79 @@ def is_market_open(symbol: str, *, as_of_utc: datetime | None = None) -> bool:
     if is_us_equity_early_close(now_est.date()):
         close_cutoff = time(13, 0)
     return time(9, 30) <= now_est.time() <= close_cutoff
+
+
+def minutes_until_us_equity_session_end(symbol: str, *, as_of_utc: datetime | None = None) -> float | None:
+    """
+    Minutes until the scheduled US cash equity session close (16:00 US/Eastern,
+    or 13:00 on early-close days). Only defined while the symbol is in regular
+    US equity hours (09:30–close); returns None for FX/crypto, weekends/holidays,
+    pre-market, or after the closing time.
+
+    Used to flatten or block new risk before the bell and avoid weekend gap
+    exposure when the bot cannot manage software stops.
+    """
+    from utils.symbols import is_crypto, is_forex
+
+    symbol = (symbol or "").upper()
+    if is_forex(symbol) or is_crypto(symbol):
+        return None
+
+    if as_of_utc is not None:
+        now_utc = as_of_utc if as_of_utc.tzinfo else as_of_utc.replace(tzinfo=pytz.UTC)
+        now_utc = now_utc.astimezone(pytz.UTC)
+    else:
+        now_utc = datetime.now(pytz.UTC)
+    tz_est = pytz.timezone("America/New_York")
+    now_est = now_utc.astimezone(tz_est)
+
+    if is_us_equity_holiday(now_est.date()):
+        return None
+    if now_est.weekday() >= 5:
+        return None
+
+    close_cutoff = time(16, 0)
+    if is_us_equity_early_close(now_est.date()):
+        close_cutoff = time(13, 0)
+
+    t = now_est.time()
+    if t < time(9, 30) or t > close_cutoff:
+        return None
+
+    close_est = tz_est.localize(datetime.combine(now_est.date(), close_cutoff))
+    return max(0.0, (close_est - now_est).total_seconds() / 60.0)
+
+
+def minutes_until_fx_weekend_close(symbol: str, *, as_of_utc: datetime | None = None) -> float | None:
+    """
+    Minutes until the standard **Friday 22:00 UTC** FX week rollover used by
+    `is_market_open` (24/5 model). Only non-negative on **Friday UTC** while the
+    synthetic session is still open (before 22:00); otherwise None.
+
+    Use this to flatten MT5 positions *before* weekend liquidity drops and
+    Sunday gaps, while quotes/orders may still work.
+    """
+    from utils.symbols import is_forex
+
+    symbol = (symbol or "").upper()
+    if not is_forex(symbol):
+        return None
+
+    if as_of_utc is not None:
+        now_utc = as_of_utc if as_of_utc.tzinfo else as_of_utc.replace(tzinfo=pytz.UTC)
+        now_utc = now_utc.astimezone(pytz.UTC)
+    else:
+        now_utc = datetime.now(pytz.UTC)
+
+    if is_fx_holiday(now_utc.date()):
+        return None
+    if now_utc.weekday() != 4:
+        return None
+
+    close_utc = datetime(now_utc.year, now_utc.month, now_utc.day, 22, 0, 0, tzinfo=pytz.UTC)
+    if now_utc >= close_utc:
+        return None
+    return max(0.0, (close_utc - now_utc).total_seconds() / 60.0)
 
 
 def is_forex_session_now(symbol: str) -> bool:

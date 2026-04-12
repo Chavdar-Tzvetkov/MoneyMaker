@@ -80,6 +80,11 @@ REENTRY_DELTA_PCT_EQUITY = float(os.getenv("REENTRY_DELTA_PCT_EQUITY", "0.005"))
 EQUITY_MIN_HOLD_MINUTES = float(os.getenv("EQUITY_MIN_HOLD_MINUTES", "15"))          # no TP/PG/trail close before this (SL still allowed)
 EQUITY_SELL_CONFIRM_CYCLES = int(os.getenv("EQUITY_SELL_CONFIRM_CYCLES", "2"))       # require N consecutive SELL signals before closing
 
+# Flatten US equity longs in the last N minutes of RTH (and skip new entries there).
+# Stops are not evaluated while the cash market is closed; this avoids holding
+# through the weekend or overnight gap. Set to 0 to disable.
+EQUITY_FORCE_FLAT_BEFORE_CLOSE_MIN = float(os.getenv("EQUITY_FORCE_FLAT_BEFORE_CLOSE_MIN", "0"))
+
 # ----- Trailing / Breakeven (FX only in current code) -----
 TRAILING_STOP_ENABLED       = True
 TRAILING_STOP_DISTANCE_PCT  = 0.0020   # 0.20% trail (a bit looser to fit wider SL)

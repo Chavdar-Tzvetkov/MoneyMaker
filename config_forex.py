@@ -30,3 +30,7 @@ MAX_CONCURRENT_FOREX = int(os.getenv("MAX_CONCURRENT_FOREX", "5"))
 
 # Optional: close all forex positions when broker session ends
 FORCE_FLAT_AT_SESSION_END = os.getenv("FORCE_FLAT_AT_SESSION_END", "0").strip().lower() in ("1", "true", "yes")
+
+# Minutes before Fri 22:00 UTC (same boundary as is_market_open for FX): close any open
+# MT5 position only; AI/strategy decisions are unchanged when flat. Set 0 to disable.
+FX_FORCE_FLAT_BEFORE_WEEKEND_MIN = float(os.getenv("FX_FORCE_FLAT_BEFORE_WEEKEND_MIN", "25"))

@@ -3,6 +3,7 @@ from config_forex import (
     FOREX_ALLOWED_SYMBOLS, FOREX_BLOCKED_SYMBOLS, USE_BROKER_SESSIONS,
     MIN_RR, TIME_STOP_MIN, MIN_PROGRESS_R, MAX_CONCURRENT_FOREX, FORCE_FLAT_AT_SESSION_END,
     FOREX_REDUCED_RISK_SYMBOLS, FOREX_REDUCED_RISK_MULT,
+    FX_FORCE_FLAT_BEFORE_WEEKEND_MIN,
 )
 # --- robust .env loader (handles Windows-1252 smart chars etc.) --------------
 # override=False so start_bot.bat (or shell) env vars win over .env (e.g. LLM_ENABLED=1 in bat)
@@ -39,7 +40,11 @@ from strategies.strategy_config import (
 )
 
 from utils.market_data import get_last_price, load_recent_bars
-from utils.market_hours import is_market_open
+from utils.market_hours import (
+    is_market_open,
+    minutes_until_fx_weekend_close,
+    minutes_until_us_equity_session_end,
+)
 from utils.symbols import is_forex, normalize_symbol, to_mt5_symbol
 
 from ai.meta_controller import MetaController
@@ -104,6 +109,7 @@ from config import (
     REENTRY_DELTA_PCT_EQUITY,
     EQUITY_MIN_HOLD_MINUTES,
     EQUITY_SELL_CONFIRM_CYCLES,
+    EQUITY_FORCE_FLAT_BEFORE_CLOSE_MIN,
     RATE_LIMIT,
     TRAILING_STOP_ENABLED,
     TRAILING_STOP_DISTANCE_PCT,
@@ -605,6 +611,84 @@ def _equity_manage_soft_stops(symbol: str, price: float, meta=None) -> bool:
         return bool(ok)
 
     return False
+
+
+def _equity_preclose_risk_off(symbol: str, price: float, meta: MetaController | None) -> str:
+    """
+    In the last EQUITY_FORCE_FLAT_BEFORE_CLOSE_MIN minutes of US RTH: market-sell
+    any long, and otherwise skip models so we do not open new equity risk into
+    the close. Returns 'flattened', 'blocked_new_only', or ''.
+    """
+    if EQUITY_FORCE_FLAT_BEFORE_CLOSE_MIN <= 0.0 or is_forex(symbol):
+        return ""
+    m_left = minutes_until_us_equity_session_end(symbol)
+    if m_left is None or m_left > float(EQUITY_FORCE_FLAT_BEFORE_CLOSE_MIN):
+        return ""
+
+    key = normalize_symbol(symbol)
+    cur_qty = float(_current_position_qty(symbol) or 0.0)
+    if cur_qty > 0.0:
+        db_pos = db_get_position(key)
+        entry = float(getattr(db_pos, "avg_price", 0.0) or 0.0) if db_pos else 0.0
+        ok, info = _route_open(symbol, -cur_qty)
+        print(f"[EOD-FLAT] {symbol}: m_left={m_left:.1f}m qty={cur_qty} — {info}")
+        _log_decision_metric(
+            symbol,
+            strategy="EOD_RISK",
+            final_outcome="SELL",
+            blocked_by="pre_session_end_flat",
+            order_result=info,
+        )
+        if ok:
+            _equity_sell_streak.pop(key, None)
+            _equity_position_open_ts.pop(key, None)
+            _equity_position_open_ts.pop(symbol, None)
+            _eq_trail_sl.pop(symbol, None)
+            if entry > 0.0:
+                realized_eq = record_equity_close(symbol, entry, price, cur_qty)
+                if meta:
+                    _feed_close_reward(meta, symbol, realized_eq, is_fx=False)
+            invalidate_portfolio_cache()
+            db_update_position(key, 0.0, 0.0, overwrite=True)
+            _rate_mark(key)
+        return "flattened"
+
+    return "blocked_new_only"
+
+
+def _fx_preweekend_risk_off(symbol: str, meta: MetaController | None) -> str:
+    """
+    In the last FX_FORCE_FLAT_BEFORE_WEEKEND_MIN minutes before Fri 22:00 UTC,
+    close any open MT5 position only. Does not change AI/strategy logic when flat;
+    normal autonomous path runs unchanged.
+    """
+    if float(FX_FORCE_FLAT_BEFORE_WEEKEND_MIN) <= 0.0 or not is_forex(symbol):
+        return ""
+    m_left = minutes_until_fx_weekend_close(symbol)
+    if m_left is None or m_left > float(FX_FORCE_FLAT_BEFORE_WEEKEND_MIN):
+        return ""
+
+    mt5_sym = to_mt5_symbol(symbol)
+    pos = mt5_get_position(mt5_sym)
+    if not pos:
+        return ""
+
+    ok, msg, realized = mt5_close_position(mt5_sym)
+    print(f"[FX-WEEKEND-FLAT] {symbol}: m_left={m_left:.1f}m — {'CLOSED' if ok else 'FAILED'} {msg}")
+    _log_decision_metric(
+        symbol,
+        strategy="FX_WEEKEND",
+        final_outcome="HOLD",
+        blocked_by="pre_weekend_flat",
+        order_result=msg,
+    )
+    if ok and meta and realized != 0.0:
+        _feed_close_reward(meta, symbol, realized, is_fx=True)
+    key = normalize_symbol(symbol)
+    _last_entry.pop(key, None)
+    _last_entry.pop(symbol, None)
+    return "flattened"
+
 
 # =============================================================================
 # Profit Guard (skim open profits while far from TP)
@@ -1385,6 +1469,24 @@ def run_live_trading():
                         _log_decision_metric(symbol, strategy="PRICE_GUARD", final_outcome="HOLD", blocked_by="no_price")
                         continue
 
+                    if is_forex(symbol) and _fx_preweekend_risk_off(symbol, meta) == "flattened":
+                        latest_outcomes[symbol] = "HOLD"
+                        continue
+
+                    eod_tag = _equity_preclose_risk_off(symbol, price, meta)
+                    if eod_tag == "flattened":
+                        latest_outcomes[symbol] = "SELL"
+                        continue
+                    if eod_tag == "blocked_new_only":
+                        latest_outcomes[symbol] = "HOLD"
+                        _log_decision_metric(
+                            symbol,
+                            strategy="EOD_RISK",
+                            final_outcome="HOLD",
+                            blocked_by="pre_session_end_no_new_risk",
+                        )
+                        continue
+
                     # Manage stops/trailing
                     _manage_trailing(symbol, price)
                     _manage_time_stop(symbol, price, meta=meta)
@@ -1397,7 +1499,6 @@ def run_live_trading():
                             print(f"[SESSION-FLAT] {symbol}: {'CLOSED' if ok else 'FAILED'} — {msg}")
                             if ok and meta and realized != 0.0:
                                 _feed_close_reward(meta, symbol, realized, is_fx=True)
-      # FX broker-side
                     if not is_forex(symbol) and _equity_manage_soft_stops(symbol, price, meta=meta):
                         latest_outcomes[symbol] = "HOLD"
                         continue
