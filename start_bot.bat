@@ -36,7 +36,8 @@ REM Keep safety checks enabled, but relax thresholds so valid setups can pass.
 set "MAX_ACCEPTABLE_UNCERTAINTY=1.00"
 set "PRECONFIRM_ATR_MIN_FX=0.00012"
 set "PRECONFIRM_GRACE_BPS_FX=80"
-set "DECISIVE_MODE_FX=1"
+REM FX decisive nudging increases chop entries; keep it OFF by default.
+set "DECISIVE_MODE_FX=0"
 
 REM Autonomous live-safe profile (cross-account)
 set "CIRCUIT_BREAKER_ENABLED=1"
@@ -46,7 +47,8 @@ set "FX_MAX_DAILY_LOSS_FRAC=0.10"
 set "MAX_CONCURRENT_FOREX=3"
 set "MAX_TRADES_PER_HOUR=4"
 set "EQUITY_MAX_TRADES_PER_HOUR=2"
-set "FX_RISK_PER_TRADE_FRAC=0.0015"
+REM Reduce per-trade FX risk to avoid repeatedly hitting max lot cap.
+set "FX_RISK_PER_TRADE_FRAC=0.0005"
 set "EQ_RISK_PER_TRADE_FRAC=0.0015"
 set "PG_REQUIRE_NOT_BUY=1"
 set "SUPERVISOR_ENABLED=1"

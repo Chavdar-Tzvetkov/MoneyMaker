@@ -1447,6 +1447,22 @@ def run_live_trading():
             switch_strategy_if_needed(mt5_equity=mt5_eq if mt5_eq_valid else 0.0, t212_equity=t212_eq if t212_eq_valid else 0.0)
             _refresh_dynamic_risk(mt5_eq=mt5_eq if mt5_eq_valid else 0.0, t212_eq=t212_eq if t212_eq_valid else 0.0)
 
+            # --------------------------- FX concurrency guard ------------------
+            # When MAX_CONCURRENT_FOREX is hit, skip *new* FX entries entirely this cycle.
+            # This prevents the log spam and wasted decision-making seen in session logs.
+            fx_open_cnt = None
+            fx_concurrency_reached = False
+            try:
+                from mt5_api import count_open_positions as _mt5_count_open_positions
+                fx_open_cnt = int(_mt5_count_open_positions() or 0)
+                fx_concurrency_reached = fx_open_cnt >= int(MAX_CONCURRENT_FOREX or 0)
+                if fx_concurrency_reached:
+                    print(f"[FOREX] Concurrency cap reached: open_fx={fx_open_cnt} >= max={MAX_CONCURRENT_FOREX}. New FX entries blocked this cycle.")
+            except Exception:
+                # If we cannot query positions, do not block.
+                fx_open_cnt = None
+                fx_concurrency_reached = False
+
             # --------------------------- Trading pass --------------------------
             latest_outcomes: Dict[str, str] = {}
 
@@ -1468,6 +1484,21 @@ def run_live_trading():
                         latest_outcomes[symbol] = "HOLD"
                         _log_decision_metric(symbol, strategy="PRICE_GUARD", final_outcome="HOLD", blocked_by="no_price")
                         continue
+
+                    # If FX concurrency is maxed and we are flat on this symbol, skip the entire
+                    # decision/entry path. Still allow stop/trailing/time-stop management above.
+                    if fx_concurrency_reached and is_forex(symbol):
+                        cur_qty = _current_position_qty(symbol)
+                        if cur_qty == 0.0:
+                            latest_outcomes[symbol] = "HOLD"
+                            _log_decision_metric(
+                                symbol,
+                                strategy="FOREX_CONCURRENCY",
+                                final_outcome="HOLD",
+                                blocked_by="fx_concurrency_cap",
+                                order_result=f"open_fx={fx_open_cnt} max={MAX_CONCURRENT_FOREX}",
+                            )
+                            continue
 
                     if is_forex(symbol) and _fx_preweekend_risk_off(symbol, meta) == "flattened":
                         latest_outcomes[symbol] = "HOLD"
